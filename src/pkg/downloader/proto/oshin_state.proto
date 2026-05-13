@@ -1,0 +1,23 @@
+syntax = "proto3";
+package downloader;
+option go_package = "github.com/mogumc/oshind/pkg/downloader/proto";
+
+message OShinState {
+  int32                version         = 1;  // 版本号
+  repeated string       urls            = 2;  // 下载源 URL 列表
+  string               file_name       = 3;  // 输出文件名
+  int64                total_size      = 4;  // 文件总大小（字节）
+  int64                chunk_size      = 5;  // 分片大小（字节）
+  string               et              = 6;  // 校验信息，格式 "type:value"（如 "md5:abc123"）
+  repeated Chunk       chunks          = 7;  // 已完成的分片列表
+  map<string, string>  headers         = 8;  // HTTP 自定义请求头
+  string               protocol        = 9;  // 下载协议（http/https/ftp/sftp）
+  int32                connections     = 10; // 最大并发连接数
+}
+
+// Chunk 单个已完成分片的状态
+message Chunk {
+  int32  id    = 1;  // 分片索引
+  int64  start = 2;  // 起始字节位置（含）
+  int64  end   = 3;  // 结束字节位置（含）
+}
