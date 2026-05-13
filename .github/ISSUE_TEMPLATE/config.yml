@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 文档
+    url: https://github.com/OShinD/OShinD/tree/main/docs
+    about: 查看项目文档获取使用帮助
+  - name: 讨论区
+    url: https://github.com/OShinD/OShinD/discussions
+    about: 提问或讨论请前往讨论区
