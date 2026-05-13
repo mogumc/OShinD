@@ -2,11 +2,11 @@
 
 [中文](../README.md)
 
-Cross-platform multi-threaded downloader supporting HTTP/HTTPS/TCP/FTP/SFTP protocols, available as both CLI and FFI library.
+Cross-platform multi-threaded downloader supporting HTTP/HTTPS/FTP/SFTP protocols, available as both CLI and FFI library.
 
 ## Features
 
-- **Multi-protocol** — HTTP/HTTPS, TCP, FTP, SFTP
+- **Multi-protocol** — HTTP/HTTPS, FTP, SFTP
 - **Multi-threaded chunked download** — up to 64 concurrent connections
 - **Resume support** — auto-saves download state, resumes after interruption
 - **Custom headers** — supports custom HTTP headers for auth, anti-hotlinking, etc.

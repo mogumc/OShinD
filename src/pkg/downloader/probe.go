@@ -4,7 +4,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -225,19 +224,6 @@ func probeResumeWithRange(rawURL string, fileSize int64, config *types.DownloadC
 	return resp.StatusCode == http.StatusPartialContent
 }
 
-// ProbeTCP 通过 TCP 连接探测目标服务器是否可达
-func ProbeTCP(host string, port int, timeout time.Duration) error {
-	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-
-	conn, err := net.DialTimeout("tcp", addr, timeout)
-	if err != nil {
-		return fmt.Errorf("TCP probe failed: %w", err)
-	}
-	conn.Close()
-
-	return nil
-}
-
 // DetectProtocol 从 URL scheme 自动推断下载协议
 func DetectProtocol(rawURL string) (types.Protocol, error) {
 	u, err := url.Parse(rawURL)
@@ -251,8 +237,6 @@ func DetectProtocol(rawURL string) (types.Protocol, error) {
 		return types.ProtocolHTTP, nil
 	case "https":
 		return types.ProtocolHTTPS, nil
-	case "tcp":
-		return types.ProtocolTCP, nil
 	case "ftp":
 		return types.ProtocolFTP, nil
 	case "sftp":

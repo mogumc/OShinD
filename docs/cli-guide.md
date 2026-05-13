@@ -85,13 +85,6 @@ oshind dl sftp://example.com/file.zip -u root -p password
 oshind dl sftp://example.com/file.zip -u root --skip-tls-verify
 ```
 
-### TCP 下载
-
-```bash
-# TCP 原始数据下载
-oshind dl tcp://example.com:8080 -o ./download/data.bin
-```
-
 ---
 
 ## 参数说明

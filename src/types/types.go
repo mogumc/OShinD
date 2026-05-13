@@ -14,7 +14,6 @@ type Protocol int
 const (
 	ProtocolHTTP  Protocol = iota // HTTP 协议
 	ProtocolHTTPS                 // HTTPS 协议
-	ProtocolTCP                   // 原始 TCP 协议
 	ProtocolFTP                   // FTP 协议
 	ProtocolSFTP                  // SFTP 协议
 )
@@ -26,8 +25,6 @@ func (p Protocol) String() string {
 		return "HTTP"
 	case ProtocolHTTPS:
 		return "HTTPS"
-	case ProtocolTCP:
-		return "TCP"
 	case ProtocolFTP:
 		return "FTP"
 	case ProtocolSFTP:
@@ -44,8 +41,6 @@ func ParseProtocol(s string) Protocol {
 		return ProtocolHTTP
 	case "HTTPS":
 		return ProtocolHTTPS
-	case "TCP":
-		return ProtocolTCP
 	case "FTP":
 		return ProtocolFTP
 	case "SFTP":
