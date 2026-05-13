@@ -63,16 +63,25 @@ jobs:
 
   release-ffi:
     name: FFI (${{ matrix.goos }}/${{ matrix.goarch }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
         include:
           - goos: linux
             goarch: amd64
+            runner: ubuntu-latest
           - goos: windows
             goarch: amd64
+            runner: windows-latest
           - goos: darwin
             goarch: amd64
+            runner: macos-13
+          - goos: android
+            goarch: arm64
+            runner: ubuntu-latest
+          - goos: android
+            goarch: amd64
+            runner: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -83,11 +92,17 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           working-directory: src
 
-      - name: Install cross-compilation tools
+      - name: Setup Android NDK
+        if: matrix.goos == 'android'
         run: |
-          if [ "${{ matrix.goos }}" = "linux" ] && [ "${{ matrix.goarch }}" = "arm64" ]; then
-            sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+          # Android NDK is pre-installed on GitHub Actions ubuntu runners
+          # Find the NDK path and set CC for cross-compilation
+          NDK_PATH="${ANDROID_NDK_HOME:-$ANDROID_NDK_LATEST_HOME}"
+          if [ -z "$NDK_PATH" ]; then
+            NDK_PATH=$(ls -d /usr/local/lib/android/sdk/ndk/*/ 2>/dev/null | head -1)
           fi
+          echo "NDK_PATH=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "Found NDK at: $NDK_PATH"
 
       - name: Extract version from tag
         id: version
@@ -104,6 +119,18 @@ jobs:
           PREFIX="lib"
           if [ "$GOOS" = "windows" ]; then EXT="dll"; PREFIX=""; fi
           if [ "$GOOS" = "darwin" ]; then EXT="dylib"; fi
+          if [ "$GOOS" = "android" ]; then EXT="so"; PREFIX="lib"; fi
+
+          # Set cross-compiler CC for Android
+          if [ "$GOOS" = "android" ]; then
+            if [ "$GOARCH" = "arm64" ]; then
+              export CC="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
+            elif [ "$GOARCH" = "amd64" ]; then
+              export CC="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang"
+            fi
+            echo "Using CC=$CC"
+          fi
+
           cd src
           go build -trimpath -ldflags "-s -w -X main.version=${{ steps.version.outputs.VERSION }}" \
             -buildmode=c-shared \
