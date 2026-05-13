@@ -15,6 +15,9 @@ jobs:
   release-cli:
     name: CLI (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
     strategy:
       matrix:
         include:
@@ -64,6 +67,9 @@ jobs:
   release-ffi:
     name: FFI (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
     strategy:
       matrix:
         include:
@@ -95,8 +101,6 @@ jobs:
       - name: Setup Android NDK
         if: matrix.goos == 'android'
         run: |
-          # Android NDK is pre-installed on GitHub Actions ubuntu runners
-          # Find the NDK path and set CC for cross-compilation
           NDK_PATH="${ANDROID_NDK_HOME:-$ANDROID_NDK_LATEST_HOME}"
           if [ -z "$NDK_PATH" ]; then
             NDK_PATH=$(ls -d /usr/local/lib/android/sdk/ndk/*/ 2>/dev/null | head -1)
@@ -121,7 +125,6 @@ jobs:
           if [ "$GOOS" = "darwin" ]; then EXT="dylib"; fi
           if [ "$GOOS" = "android" ]; then EXT="so"; PREFIX="lib"; fi
 
-          # Set cross-compiler CC for Android
           if [ "$GOOS" = "android" ]; then
             if [ "$GOARCH" = "arm64" ]; then
               export CC="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
