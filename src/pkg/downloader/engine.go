@@ -88,6 +88,10 @@ func (e *Engine) Download(ctx context.Context, rawURL string, config *types.Down
 		}
 		task.Metadata = metadata
 
+		if metadata.FileName != "" {
+			task.FileName = metadata.FileName
+		}
+
 		// 下载前检查已存在文件
 		outputPath := e.getOutputPath(task)
 		skip, checkedPath, checkErr := checkExistingFile(outputPath, task)
@@ -212,6 +216,10 @@ func (e *Engine) SubmitDownload(rawURL string, config *types.DownloadConfig) (st
 				return
 			}
 			task.Metadata = metadata
+
+			if metadata.FileName != "" {
+				task.FileName = metadata.FileName
+			}
 
 			// 下载前检查已存在文件（强制全新下载时跳过此检查）
 			outputPath := e.getOutputPath(task)

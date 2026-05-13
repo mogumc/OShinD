@@ -119,6 +119,7 @@ type FileMetadata struct {
 	ETag          string // 资源标识
 	ContentType   string // 内容类型
 	Checksum      string // 校验和（如有）
+	FileName      string // 服务器返回的文件名（Content-Disposition）
 }
 
 // ChunkInfo 分片信息

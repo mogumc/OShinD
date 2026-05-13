@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -81,6 +82,12 @@ func Probe(rawURL string, config *types.DownloadConfig) (*types.FileMetadata, er
 	contentMD5 := resp.Header.Get("Content-MD5")
 	if contentMD5 != "" {
 		metadata.Checksum = contentMD5
+	}
+
+	if cd := resp.Header.Get("Content-Disposition"); cd != "" {
+		if name := ParseContentDisposition(cd); name != "" {
+			metadata.FileName = name
+		}
 	}
 
 	if !metadata.SupportResume && metadata.Size > 0 {
@@ -287,4 +294,84 @@ func ExtractFileInfo(rawURL string) string {
 	}
 
 	return decoded
+}
+
+// ParseContentDisposition 从 Content-Disposition 头中提取文件名
+// 支持两种格式：
+//   - filename="file.zip"  (RFC 6266)
+//   - filename*=UTF-8''file%20name.zip  (RFC 5987, 优先级更高)
+//
+// 优先级：filename* > filename（RFC 5987 规定）
+func ParseContentDisposition(header string) string {
+	if header == "" {
+		return ""
+	}
+
+	_, params, err := mime.ParseMediaType(header)
+	if err != nil {
+		return parseContentDispositionFallback(header)
+	}
+
+	if fnStar, ok := params["filename*"]; ok {
+		if name := decodeRFC5987(fnStar); name != "" {
+			return sanitizeFileName(name)
+		}
+	}
+
+	if fn, ok := params["filename"]; ok {
+		if name := strings.TrimSpace(fn); name != "" {
+			return sanitizeFileName(name)
+		}
+	}
+
+	return ""
+}
+
+// parseContentDispositionFallback 在 mime.ParseMediaType 失败时手动提取文件名
+func parseContentDispositionFallback(header string) string {
+	lower := strings.ToLower(header)
+
+	if idx := strings.Index(lower, "filename*="); idx >= 0 {
+		value := header[idx+len("filename*="):]
+		value = strings.Trim(value, "\" ")
+		if name := decodeRFC5987(value); name != "" {
+			return sanitizeFileName(name)
+		}
+	}
+
+	if idx := strings.Index(lower, "filename="); idx >= 0 {
+		value := header[idx+len("filename="):]
+		value = strings.Trim(value, "\" ")
+		if semiIdx := strings.Index(value, ";"); semiIdx >= 0 {
+			value = value[:semiIdx]
+		}
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return sanitizeFileName(value)
+		}
+	}
+
+	return ""
+}
+
+// decodeRFC5987 解码 RFC 5987 编码的 filename* 值
+// 格式: charset'language'value（language 可为空）
+func decodeRFC5987(value string) string {
+	parts := strings.SplitN(value, "'", 3)
+	if len(parts) != 3 {
+		return ""
+	}
+	decoded, err := url.PathUnescape(parts[2])
+	if err != nil {
+		return parts[2]
+	}
+	return decoded
+}
+
+// sanitizeFileName 清理文件名，移除路径分隔符和危险字符
+func sanitizeFileName(name string) string {
+	name = strings.ReplaceAll(name, "/", "_")
+	name = strings.ReplaceAll(name, "\\", "_")
+	name = strings.ReplaceAll(name, "\x00", "")
+	return strings.TrimSpace(name)
 }
