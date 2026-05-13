@@ -2,11 +2,11 @@
 
 [English](docs/README-en.md)
 
-跨平台多线程下载器，支持 HTTP/HTTPS/TCP/FTP/SFTP 协议，提供 CLI 和 FFI 两种使用方式。
+跨平台多线程下载器，支持 HTTP/HTTPS/FTP/SFTP 协议，提供 CLI 和 FFI 两种使用方式。
 
 ## 特性
 
-- **多协议支持** — HTTP/HTTPS、TCP、FTP、SFTP
+- **多协议支持** — HTTP/HTTPS、FTP、SFTP
 - **多线程分片下载** — 最多 64 个并发连接
 - **断点续传** — 自动保存下载状态，中断后可继续
 - **自定义请求头** — 支持自定义 HTTP 头，适用于鉴权、防盗链等场景
