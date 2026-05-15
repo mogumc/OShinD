@@ -222,7 +222,7 @@ func (d *HTTPDownloader) nextURL() string {
 }
 
 // Download 执行 HTTP/HTTPS 下载
-func (d *HTTPDownloader) Download(ctx context.Context, task *types.DownloadTask, onReady func()) error {
+func (d *HTTPDownloader) Download(ctx context.Context, task *types.DownloadTask) error {
 	outputPath := d.getOutputPath(task)
 	oshinPath := GetOShinStatePath(outputPath)
 	tempPath := GetTempPath(outputPath)
@@ -304,11 +304,6 @@ func (d *HTTPDownloader) Download(ctx context.Context, task *types.DownloadTask,
 
 	// resume 阶段结束，进入下载
 	task.SetStatus(types.TaskStatusDownloading)
-
-	// 在所有预下载消息（resume/init 提示）输出完毕后通知外部开始显示进度
-	if onReady != nil {
-		onReady()
-	}
 
 	// 计算实际并发数：min(分片数, 最大连接数)
 	chunkCount := len(task.Chunks)

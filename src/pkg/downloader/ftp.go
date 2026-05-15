@@ -24,7 +24,7 @@ func NewFTPDownloader() *FTPDownloader {
 }
 
 // Download 建立 FTP 连接并下载文件（支持断点续传）
-func (d *FTPDownloader) Download(ctx context.Context, task *types.DownloadTask, onReady func()) error {
+func (d *FTPDownloader) Download(ctx context.Context, task *types.DownloadTask) error {
 	host, port, path, err := d.parseFTPAddress(task.URL)
 	if err != nil {
 		return fmt.Errorf("invalid FTP address: %w", err)
@@ -101,11 +101,6 @@ func (d *FTPDownloader) Download(ctx context.Context, task *types.DownloadTask, 
 
 	// resume 阶段结束，进入下载
 	task.SetStatus(types.TaskStatusDownloading)
-
-	// 在所有预下载消息输出完毕后再启动进度显示
-	if onReady != nil {
-		onReady()
-	}
 
 	// 打开或创建临时文件
 	var outputFile *os.File

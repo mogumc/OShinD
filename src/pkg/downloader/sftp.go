@@ -25,8 +25,7 @@ func NewSFTPDownloader() *SFTPDownloader {
 }
 
 // Download 建立 SFTP 连接并下载文件（支持断点续传）
-// onReady 在所有预下载消息（连接、认证等）输出完毕后调用，通知外部可以开始显示进度
-func (d *SFTPDownloader) Download(ctx context.Context, task *types.DownloadTask, onReady func()) error {
+func (d *SFTPDownloader) Download(ctx context.Context, task *types.DownloadTask) error {
 	host, port, path, err := d.parseSFTPAddress(task.URL)
 	if err != nil {
 		return fmt.Errorf("invalid SFTP address: %w", err)
@@ -117,11 +116,6 @@ func (d *SFTPDownloader) Download(ctx context.Context, task *types.DownloadTask,
 
 	// resume 阶段结束，进入下载
 	task.SetStatus(types.TaskStatusDownloading)
-
-	// 在所有预下载消息输出完毕后通知外部开始显示进度
-	if onReady != nil {
-		onReady()
-	}
 
 	// 打开或创建临时文件（支持续传）
 	var outputFile *os.File

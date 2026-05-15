@@ -59,6 +59,12 @@ func (e *Engine) Download(ctx context.Context, rawURL string, config *types.Down
 	e.cancelFuncs[task.ID] = taskCancel
 	e.mu.Unlock()
 
+	// 尽早通知外部任务就绪，使 ProgressReporter 能观察到所有状态变化
+	// （Probing → Resuming → Downloading → Verifying → Completed）
+	if onReady != nil {
+		onReady(task)
+	}
+
 	// 根据协议执行下载
 	switch protocol {
 	case types.ProtocolHTTP, types.ProtocolHTTPS:
@@ -93,20 +99,20 @@ func (e *Engine) Download(ctx context.Context, rawURL string, config *types.Down
 			task.FileName = filepath.Base(checkedPath)
 		}
 
-		if err := e.httpDownloader.Download(taskCtx, task, wrapOnReady(onReady, task)); err != nil {
+		if err := e.httpDownloader.Download(taskCtx, task); err != nil {
 			task.SetStatus(types.TaskStatusFailed)
 			e.cleanupCancelFunc(task.ID)
 			return task, fmt.Errorf("HTTP download failed: %w", err)
 		}
 	case types.ProtocolFTP:
-		if err := e.ftpDownloader.Download(taskCtx, task, wrapOnReady(onReady, task)); err != nil {
+		if err := e.ftpDownloader.Download(taskCtx, task); err != nil {
 			task.SetStatus(types.TaskStatusFailed)
 			e.cleanupCancelFunc(task.ID)
 			return task, fmt.Errorf("FTP download failed: %w", err)
 		}
 
 	case types.ProtocolSFTP:
-		if err := e.sftpDownloader.Download(taskCtx, task, wrapOnReady(onReady, task)); err != nil {
+		if err := e.sftpDownloader.Download(taskCtx, task); err != nil {
 			task.SetStatus(types.TaskStatusFailed)
 			e.cleanupCancelFunc(task.ID)
 			return task, fmt.Errorf("SFTP download failed: %w", err)
@@ -158,6 +164,11 @@ func (e *Engine) SubmitDownload(rawURL string, config *types.DownloadConfig, onR
 	e.cancelFuncs[task.ID] = taskCancel
 	e.mu.Unlock()
 
+	// 只要状态就绪就通知任务准备完成
+	if onReady != nil {
+		onReady(task)
+	}
+
 	go func() {
 		// 根据协议执行下载
 		switch protocol {
@@ -196,7 +207,7 @@ func (e *Engine) SubmitDownload(rawURL string, config *types.DownloadConfig, onR
 				}
 			}
 
-			if dlErr := e.httpDownloader.Download(taskCtx, task, wrapOnReady(onReady, task)); dlErr != nil {
+			if dlErr := e.httpDownloader.Download(taskCtx, task); dlErr != nil {
 				if task.GetStatus() != types.TaskStatusPaused {
 					task.SetStatus(types.TaskStatusFailed)
 				}
@@ -205,7 +216,7 @@ func (e *Engine) SubmitDownload(rawURL string, config *types.DownloadConfig, onR
 			}
 
 		case types.ProtocolFTP:
-			if dlErr := e.ftpDownloader.Download(taskCtx, task, wrapOnReady(onReady, task)); dlErr != nil {
+			if dlErr := e.ftpDownloader.Download(taskCtx, task); dlErr != nil {
 				if task.GetStatus() != types.TaskStatusPaused {
 					task.SetStatus(types.TaskStatusFailed)
 				}
@@ -214,7 +225,7 @@ func (e *Engine) SubmitDownload(rawURL string, config *types.DownloadConfig, onR
 			}
 
 		case types.ProtocolSFTP:
-			if dlErr := e.sftpDownloader.Download(taskCtx, task, wrapOnReady(onReady, task)); dlErr != nil {
+			if dlErr := e.sftpDownloader.Download(taskCtx, task); dlErr != nil {
 				if task.GetStatus() != types.TaskStatusPaused {
 					task.SetStatus(types.TaskStatusFailed)
 				}
@@ -349,15 +360,6 @@ func (e *Engine) cleanupCancelFunc(id string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	delete(e.cancelFuncs, id)
-}
-
-// wrapOnReady 将 onReady(task) 回调适配为 onReady() 回调供 downloader 使用
-// 通知外部下载状态已就绪
-func wrapOnReady(onReady func(*types.DownloadTask), task *types.DownloadTask) func() {
-	if onReady == nil {
-		return nil
-	}
-	return func() { onReady(task) }
 }
 
 // getOutputPath 获取输出文件路径
