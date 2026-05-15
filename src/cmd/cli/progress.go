@@ -3,11 +3,13 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mogumc/oshind/pkg/downloader"
 	"github.com/mogumc/oshind/types"
 )
 
@@ -33,15 +35,16 @@ type doneMsg struct {
 
 // progressModel bubbletea model，接收 ProgressReporter 的回调行并渲染
 type progressModel struct {
-	lines      []string         // 当前帧的进度行
-	status     types.TaskStatus // 当前任务状态
-	result     *types.DownloadTask
-	linesChan  chan []string
-	statusChan chan types.TaskStatus
-	doneChan   chan *doneMsg
-	done       bool
-	err        error
-	quitting   bool
+	lines       []string         // 当前帧的进度行
+	status      types.TaskStatus // 当前任务状态
+	result      *types.DownloadTask
+	linesChan   chan []string
+	statusChan  chan types.TaskStatus
+	doneChan    chan *doneMsg
+	done        bool
+	err         error
+	quitting    bool
+	interrupted bool // Ctrl+C 触发的暂停中断
 }
 
 // newProgressModel 创建 progressModel 并返回 channels 供外部注入回调
@@ -80,6 +83,7 @@ func (m progressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
+			m.interrupted = true
 			m.quitting = true
 			return m, tea.Quit
 		}
@@ -89,6 +93,18 @@ func (m progressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m progressModel) View() string {
 	if m.quitting {
+		// Ctrl+C 中断时保留最后的进度帧，避免 Bubbletea 退出时清屏导致后续摘要无输出
+		if m.interrupted {
+			var parts []string
+			if m.status != 0 {
+				parts = append(parts, fmt.Sprintf("  %s: %s", T("状态", "Status"), m.status.String()))
+			}
+			if len(m.lines) > 0 {
+				parts = append(parts, m.lines...)
+			}
+			parts = append(parts, "  ⏸️ "+statusPaused)
+			return "\n" + strings.Join(parts, "\n") + "\n"
+		}
 		return ""
 	}
 	if len(m.lines) == 0 && m.status == 0 {
@@ -327,6 +343,100 @@ func printInfo(label, val string) {
 		fmt.Println(InfoStyle.Render(label) + " " + val)
 	} else {
 		fmt.Printf("%s %s\n", label, val)
+	}
+}
+
+// printInterruptSummary 输出 Ctrl+C 暂停时的摘要信息
+func printInterruptSummary(task *types.DownloadTask, rawURL string, config *types.DownloadConfig) {
+	if task == nil {
+		fmt.Fprintln(os.Stderr, sumInterruptTip)
+		return
+	}
+
+	downloaded := task.Progress.GetDownloaded()
+	total := int64(0)
+	if task.Metadata != nil {
+		total = task.Metadata.Size
+	}
+	completedChunks := task.GetCompletedChunkCount()
+	totalChunks := len(task.Chunks)
+
+	// 构建状态文件路径
+	statePath := ""
+	if task.FileName != "" {
+		statePath = downloader.GetOShinStatePath(filepath.Join(config.OutputDir, task.FileName))
+	}
+
+	if isInteractive() {
+		fmt.Println()
+		fmt.Println(WarningStyle.Render("  ⏸️ ") + WarningStyle.Render(statusPaused))
+		fmt.Println()
+		fmt.Println(renderDivider(T("暂停摘要", "Pause Summary")))
+		fmt.Println()
+		fmt.Println(renderKV(probeURL, rawURL))
+		if task.FileName != "" {
+			fmt.Println(renderKV(sumFile, task.FileName))
+		}
+		if total > 0 {
+			fmt.Println(renderKV(sumSize, formatBytes(total)))
+		}
+		if downloaded > 0 {
+			pct := ""
+			if total > 0 {
+				pct = fmt.Sprintf(" (%.1f%%)", float64(downloaded)/float64(total)*100)
+			}
+			fmt.Println(renderKV(progressDownloaded, formatBytes(downloaded)+pct))
+		}
+		if totalChunks > 0 {
+			fmt.Println(renderKV(sumChunkProgress, fmt.Sprintf("%d/%d", completedChunks, totalChunks)))
+		}
+		if task.Metadata != nil && task.Metadata.Checksum != "" {
+			if task.Metadata.ChecksumType != "" {
+				fmt.Println(renderKV(sumChecksum, fmt.Sprintf("%s:%s", task.Metadata.ChecksumType, task.Metadata.Checksum)))
+			} else {
+				fmt.Println(renderKV(sumChecksum, task.Metadata.Checksum))
+			}
+		}
+		fmt.Println(renderKV(sumProtocol, task.Protocol.String()))
+		fmt.Println()
+		if statePath != "" {
+			fmt.Println(InfoStyle.Render("  ✓ ") + sumStateFile + ": " + statePath)
+		} else {
+			fmt.Println(InfoStyle.Render("  ✓ ") + T("续传状态已保存", "Resume state saved"))
+		}
+		fmt.Println(InfoStyle.Render("  ℹ ") + sumInterruptTip)
+		fmt.Println()
+	} else {
+		fmt.Printf("\n%s\n\n", statusPaused)
+		fmt.Printf("  %-10s%s\n", probeURL+":", rawURL)
+		if task.FileName != "" {
+			fmt.Printf("  %-10s%s\n", sumFile+":", task.FileName)
+		}
+		if total > 0 {
+			fmt.Printf("  %-10s%s\n", sumSize+":", formatBytes(total))
+		}
+		if downloaded > 0 {
+			pct := ""
+			if total > 0 {
+				pct = fmt.Sprintf(" (%.1f%%)", float64(downloaded)/float64(total)*100)
+			}
+			fmt.Printf("  %-10s%s\n", progressDownloaded+":", formatBytes(downloaded)+pct)
+		}
+		if totalChunks > 0 {
+			fmt.Printf("  %-10s%d/%d\n", sumChunkProgress+":", completedChunks, totalChunks)
+		}
+		if task.Metadata != nil && task.Metadata.Checksum != "" {
+			fmt.Printf("  %-10s%s\n", sumChecksum+":", task.Metadata.Checksum)
+		}
+		fmt.Printf("  %-10s%s\n", sumProtocol+":", task.Protocol.String())
+		fmt.Println()
+		if statePath != "" {
+			fmt.Printf("  %s: %s\n", sumStateFile, statePath)
+		} else {
+			fmt.Printf("  %s\n", T("续传状态已保存", "Resume state saved"))
+		}
+		fmt.Printf("  %s\n", sumInterruptTip)
+		fmt.Println()
 	}
 }
 

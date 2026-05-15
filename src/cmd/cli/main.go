@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"time"
@@ -164,6 +165,10 @@ func handleDownload(args []string) {
 func runBubbleTeaDownload(e *downloader.Engine, rawURL string, config *types.DownloadConfig) {
 	model, linesChan, statusChan, doneChan := newProgressModel()
 
+	// 可取消的 context：Ctrl+C 时取消下载
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// 在 goroutine 中执行下载，完成后通知 bubbletea 退出
 	go func() {
 		var reporter *ProgressReporter
@@ -183,7 +188,7 @@ func runBubbleTeaDownload(e *downloader.Engine, rawURL string, config *types.Dow
 			reporter.Start()
 		}
 
-		task, err := e.Download(context.Background(), rawURL, config, onReady)
+		task, err := e.Download(ctx, rawURL, config, onReady)
 
 		// 停止 reporter
 		if reporter != nil {
@@ -196,13 +201,40 @@ func runBubbleTeaDownload(e *downloader.Engine, rawURL string, config *types.Dow
 	// 运行 bubbletea
 	p := tea.NewProgram(model, tea.WithOutput(os.Stdout))
 	finalModel, runErr := p.Run()
+
+	// 从最终 model 获取结果
+	m := finalModel.(progressModel)
+
+	// 判断是否为 Ctrl+C 中断（两种路径都会触发）：
+	// 1. bubbletea raw mode 下 ctrl+c 作为 KeyMsg 被我们的 handler 捕获 → m.interrupted = true
+	// 2. Windows 或非 raw mode 下 ctrl+c 触发 SIGINT → bubbletea 内部捕获为 InterruptMsg → runErr = tea.ErrInterrupted
+	isInterrupt := m.interrupted || runErr == tea.ErrInterrupted
+
+	if isInterrupt {
+		cancel()
+		// 等待 goroutine 结束，获取最终结果
+		var doneResult *doneMsg
+		select {
+		case doneResult = <-doneChan:
+		case <-time.After(5 * time.Second):
+		}
+
+		if doneResult != nil && doneResult.task != nil {
+			if doneResult.err == nil && doneResult.task.GetStatus() == types.TaskStatusCompleted {
+				printDownloadSummary(doneResult.task)
+			} else {
+				printInterruptSummary(doneResult.task, rawURL, config)
+			}
+		} else {
+			fmt.Fprintln(os.Stderr, sumInterruptTip)
+		}
+		return
+	}
+
 	if runErr != nil {
 		printError(fmt.Sprintf("%s: %v", errTUIError, runErr))
 		os.Exit(1)
 	}
-
-	// 从最终 model 获取结果
-	m := finalModel.(progressModel)
 	if m.err != nil {
 		printError(fmt.Sprintf("%s: %v", errDownloadFailed, m.err))
 		os.Exit(1)
@@ -214,23 +246,58 @@ func runBubbleTeaDownload(e *downloader.Engine, rawURL string, config *types.Dow
 
 // runSimpleDownload 非交互终端：直接滚动输出
 func runSimpleDownload(e *downloader.Engine, rawURL string, config *types.DownloadConfig) {
-	var reporter *ProgressReporter
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	onReady := func(task *types.DownloadTask) {
-		reporter = NewProgressReporter(task, nil)
+	var reporter *ProgressReporter
+	doneChan := make(chan struct{})
+	var task *types.DownloadTask
+	var dlErr error
+
+	onReady := func(t *types.DownloadTask) {
+		reporter = NewProgressReporter(t, nil)
 		reporter.OnReport = simpleOnReport
 		reporter.OnStop = func(_ int) {}
 		reporter.Start()
 	}
 
-	task, err := e.Download(context.Background(), rawURL, config, onReady)
+	go func() {
+		task, dlErr = e.Download(ctx, rawURL, config, onReady)
+		close(doneChan)
+	}()
+
+	// 监听 SIGINT/SIGTERM
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt)
+	defer signal.Stop(sigChan)
+
+	select {
+	case <-doneChan:
+		// 下载正常完成
+	case <-sigChan:
+		// Ctrl+C 中断
+		cancel()
+		select {
+		case <-doneChan:
+		case <-time.After(5 * time.Second):
+		}
+		if reporter != nil {
+			reporter.Stop()
+		}
+		if task != nil {
+			printInterruptSummary(task, rawURL, config)
+		} else {
+			fmt.Fprintln(os.Stderr, sumInterruptTip)
+		}
+		return
+	}
 
 	if reporter != nil {
 		reporter.Stop()
 	}
 
-	if err != nil {
-		printError(fmt.Sprintf("%s: %v", errDownloadFailed, err))
+	if dlErr != nil {
+		printError(fmt.Sprintf("%s: %v", errDownloadFailed, dlErr))
 		os.Exit(1)
 	}
 	printDownloadSummary(task)
@@ -357,6 +424,10 @@ func runBubbleTeaProbe(rawURL string, config *types.DownloadConfig) {
 	p := tea.NewProgram(model, tea.WithOutput(os.Stdout))
 	finalModel, runErr := p.Run()
 	if runErr != nil {
+		// probe 命令的 Ctrl+C 不需要输出摘要，直接退出
+		if runErr == tea.ErrInterrupted {
+			return
+		}
 		printError(fmt.Sprintf("%s: %v", errTUIError, runErr))
 		os.Exit(1)
 	}
@@ -465,7 +536,7 @@ func handleHasResume(args []string) {
 	state, _ := downloader.LoadOShinState(oshinPath)
 	if state == nil {
 		if isInteractive() {
-			fmt.Println(WarningStyle.Render("  ⚠ ") + sumNoResume)
+			fmt.Println(WarningStyle.Render("  ❌ ") + sumNoResume)
 		} else {
 			fmt.Println(sumNoResume)
 		}

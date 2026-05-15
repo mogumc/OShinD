@@ -149,6 +149,13 @@ var (
 	resumeMore  string
 )
 
+// Interrupt / Pause
+var (
+	sumInterruptTip  string
+	sumChunkProgress string
+	sumStateFile     string
+)
+
 // initTranslations 在 locale 设置后调用，填充所有翻译变量
 func initTranslations() {
 	// Help
@@ -253,4 +260,9 @@ func initTranslations() {
 	resumeStart = T("起始", "Start")
 	resumeEnd = T("结束", "End")
 	resumeMore = T("... 还有 %d 个", "... (%d more)")
+
+	// Interrupt / Pause
+	sumInterruptTip = T("重新运行相同的下载命令继续下载", "Re-run the same command to resume")
+	sumChunkProgress = T("分片", "Chunks")
+	sumStateFile = T("状态文件", "State file")
 }
