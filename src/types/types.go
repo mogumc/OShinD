@@ -123,6 +123,7 @@ type FileMetadata struct {
 	Checksum      string // 校验和值（如有）
 	ChecksumType  string // 校验和类型："md5" / "sha256" / ""（未知）
 	FileName      string // 服务器返回的文件名（Content-Disposition）
+	FinalURL      string // 经过跳转后的最终 URL（无跳转则为空）
 }
 
 // ChunkInfo 分片信息

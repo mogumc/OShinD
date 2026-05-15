@@ -77,6 +77,11 @@ func (e *Engine) Download(ctx context.Context, rawURL string, config *types.Down
 		}
 		task.Metadata = metadata
 
+		// 若发生跳转，使用最终 URL 进行下载
+		if metadata.FinalURL != "" {
+			task.URL = metadata.FinalURL
+		}
+
 		if metadata.FileName != "" {
 			task.FileName = metadata.FileName
 		}
@@ -183,6 +188,11 @@ func (e *Engine) SubmitDownload(rawURL string, config *types.DownloadConfig, onR
 				return
 			}
 			task.Metadata = metadata
+
+			// 若发生跳转，使用最终 URL 进行下载
+			if metadata.FinalURL != "" {
+				task.URL = metadata.FinalURL
+			}
 
 			if metadata.FileName != "" {
 				task.FileName = metadata.FileName

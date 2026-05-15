@@ -26,7 +26,8 @@ func applyHeaders(req *http.Request, headers map[string]string) {
 	}
 }
 
-// Probe 通过 HEAD 请求获取服务器资源元信息和断点续传支持情况
+// Probe 通过 GET Range: bytes=0-0 获取服务器资源元信息和断点续传支持情况。
+
 func Probe(rawURL string, config *types.DownloadConfig) (*types.FileMetadata, error) {
 	if config == nil {
 		config = types.DefaultConfig()
@@ -34,7 +35,7 @@ func Probe(rawURL string, config *types.DownloadConfig) (*types.FileMetadata, er
 
 	client := newProbeClient(config)
 
-	req, err := http.NewRequest("HEAD", rawURL, nil)
+	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -43,34 +44,64 @@ func Probe(rawURL string, config *types.DownloadConfig) (*types.FileMetadata, er
 
 	applyHeaders(req, config.Headers)
 
+	req.Header.Set("Range", "bytes=0-0")
+
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("HEAD request failed: %w", err)
+		return nil, fmt.Errorf("probe request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	// 读至多 1 字节后主动关闭，避免触发服务器的全量传输
+	io.CopyN(io.Discard, resp.Body, 1)
+	resp.Body.Close()
 
 	metadata := &types.FileMetadata{
 		Size:          -1,
 		SupportResume: false,
 	}
 
-	contentLength := resp.Header.Get("Content-Length")
-	if contentLength != "" {
-		size, err := strconv.ParseInt(contentLength, 10, 64)
-		if err == nil {
-			metadata.Size = size
+	// 记录经过跳转后的最终 URL
+	if resp.Request != nil && resp.Request.URL != nil {
+		finalURL := resp.Request.URL.String()
+		if finalURL != rawURL {
+			metadata.FinalURL = finalURL
 		}
 	}
 
-	acceptRange := resp.Header.Get("Accept-Ranges")
-	if acceptRange != "" {
+	// 206 Partial Content：服务器支持 Range，从 Content-Range 头解析真实文件大小
+	// 格式：Content-Range: bytes 0-0/总大小
+	if resp.StatusCode == http.StatusPartialContent {
 		metadata.SupportResume = true
-		metadata.AcceptRange = acceptRange
+		if cr := resp.Header.Get("Content-Range"); cr != "" {
+			metadata.AcceptRange = "bytes"
+			// 解析 "bytes 0-0/N" 中的 N
+			if slashIdx := strings.LastIndex(cr, "/"); slashIdx >= 0 {
+				totalStr := strings.TrimSpace(cr[slashIdx+1:])
+				if totalStr != "*" {
+					if size, parseErr := strconv.ParseInt(totalStr, 10, 64); parseErr == nil {
+						metadata.Size = size
+					}
+				}
+			}
+		}
 	}
 
-	contentType := resp.Header.Get("Content-Type")
-	if contentType != "" {
-		metadata.ContentType = contentType
+	// 服务器不支持 Range（200 OK）：回退读 Content-Length
+	if metadata.Size < 0 {
+		if cl := resp.Header.Get("Content-Length"); cl != "" {
+			if size, parseErr := strconv.ParseInt(cl, 10, 64); parseErr == nil {
+				metadata.Size = size
+			}
+		}
+	}
+
+	// Accept-Ranges 头也可作为断点续传依据
+	if ar := resp.Header.Get("Accept-Ranges"); ar != "" && ar != "none" {
+		metadata.SupportResume = true
+		metadata.AcceptRange = ar
+	}
+
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		metadata.ContentType = ct
 	}
 
 	if csType, csValue := DetectChecksumFromHeaders(resp.Header); csValue != "" {
@@ -82,10 +113,6 @@ func Probe(rawURL string, config *types.DownloadConfig) (*types.FileMetadata, er
 		if name := ParseContentDisposition(cd); name != "" {
 			metadata.FileName = name
 		}
-	}
-
-	if !metadata.SupportResume && metadata.Size > 0 {
-		metadata.SupportResume = probeResumeWithRange(rawURL, metadata.Size, config)
 	}
 
 	return metadata, nil
@@ -196,33 +223,6 @@ func probeConnectionSpeed(rawURL string, config *types.DownloadConfig) (float64,
 
 	speed := float64(n) / elapsed
 	return speed, nil
-}
-
-// probeResumeWithRange 通过 Range 请求探测断点续传支持
-func probeResumeWithRange(rawURL string, fileSize int64, config *types.DownloadConfig) bool {
-	client := newProbeClient(config)
-
-	req, err := http.NewRequest("GET", rawURL, nil)
-	if err != nil {
-		return false
-	}
-
-	if fileSize >= 0 {
-		req.Header.Set("Range", "bytes=0-0")
-	}
-
-	req.Header.Set("User-Agent", "OShinD/1.0")
-
-	applyHeaders(req, config.Headers)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-
-	// 206 Partial Content 表示服务器支持 Range 请求
-	return resp.StatusCode == http.StatusPartialContent
 }
 
 // DetectProtocol 从 URL scheme 自动推断下载协议
