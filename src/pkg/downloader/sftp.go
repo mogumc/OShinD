@@ -33,9 +33,8 @@ func (d *SFTPDownloader) Download(ctx context.Context, task *types.DownloadTask)
 
 	ftpConfig := task.Config.FTPConfig
 	if ftpConfig == nil {
-		ftpConfig = &types.FTPConfig{Port: 22}
-	}
-	if ftpConfig.Port == 0 {
+		ftpConfig = &types.FTPConfig{Port: port}
+	} else if ftpConfig.Port == 0 {
 		ftpConfig.Port = port
 	}
 
@@ -43,6 +42,11 @@ func (d *SFTPDownloader) Download(ctx context.Context, task *types.DownloadTask)
 		User:            ftpConfig.Username,
 		Auth:            []ssh.AuthMethod{},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // 注意：生产环境应该验证主机密钥
+	}
+
+	// 无凭据时使用匿名用户
+	if sshConfig.User == "" {
+		sshConfig.User = "anonymous"
 	}
 
 	if ftpConfig.Password != "" {
@@ -197,6 +201,7 @@ func (d *SFTPDownloader) Download(ctx context.Context, task *types.DownloadTask)
 	}
 
 	// 清理状态文件
+	stateSaver.Stop()
 	RemoveOShinState(oshinPath)
 
 	task.SetStatus(types.TaskStatusCompleted)

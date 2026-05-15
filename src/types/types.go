@@ -194,7 +194,7 @@ func DefaultConfig() *DownloadConfig {
 			InsecureSkipVerify: false,
 		},
 		FTPConfig: &FTPConfig{
-			Port: 21,
+			Port: 0,
 		},
 	}
 }

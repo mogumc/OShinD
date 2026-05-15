@@ -32,9 +32,8 @@ func (d *FTPDownloader) Download(ctx context.Context, task *types.DownloadTask) 
 
 	ftpConfig := task.Config.FTPConfig
 	if ftpConfig == nil {
-		ftpConfig = &types.FTPConfig{Port: 21}
-	}
-	if ftpConfig.Port == 0 {
+		ftpConfig = &types.FTPConfig{Port: port}
+	} else if ftpConfig.Port == 0 {
 		ftpConfig.Port = port
 	}
 
@@ -49,6 +48,13 @@ func (d *FTPDownloader) Download(ctx context.Context, task *types.DownloadTask) 
 		err = conn.Login(ftpConfig.Username, ftpConfig.Password)
 		if err != nil {
 			return fmt.Errorf("FTP login failed: %w", err)
+		}
+	} else {
+		// 无凭据时尝试匿名登录
+		err = conn.Login("anonymous", "guest@")
+		if err != nil {
+			// 匿名登录失败不致命，部分服务器允许无登录访问
+			fmt.Printf("FTP anonymous login skipped: %v\n", err)
 		}
 	}
 
@@ -189,6 +195,7 @@ func (d *FTPDownloader) Download(ctx context.Context, task *types.DownloadTask) 
 	}
 
 	// 清理状态文件
+	stateSaver.Stop()
 	RemoveOShinState(oshinPath)
 
 	task.SetStatus(types.TaskStatusCompleted)
