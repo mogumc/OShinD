@@ -68,6 +68,31 @@ func validateResumeFile(state *OShinState, tempPath string, task *types.Download
 		return false
 	}
 
+	// 下载文件校验值需要和续传文件一致
+	if state.ET != "" {
+		parts := strings.SplitN(state.ET, ":", 2)
+		if len(parts) == 2 {
+			checksumType, checksumValue := parts[0], parts[1]
+			if checksumType != task.Metadata.ChecksumType || checksumValue != task.Metadata.Checksum {
+				return false
+			}
+		}
+	} else {
+		// 下载地址必须存在于续传状态的 URL 列表中
+		if task != nil && task.URL != "" {
+			found := false
+			for _, u := range state.URLs {
+				if u == task.URL {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return false
+			}
+		}
+	}
+
 	return true
 }
 
