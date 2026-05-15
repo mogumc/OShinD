@@ -230,8 +230,6 @@ func (d *HTTPDownloader) nextURL() string {
 // Download 执行 HTTP/HTTPS 下载
 // reporter 参数用于在所有预下载消息（resume提示等）输出完毕后才启动进度显示
 func (d *HTTPDownloader) Download(ctx context.Context, task *types.DownloadTask, reporter *ProgressReporter) error {
-	task.SetStatus(types.TaskStatusDownloading)
-
 	outputPath := d.getOutputPath(task)
 	oshinPath := GetOShinStatePath(outputPath)
 	tempPath := GetTempPath(outputPath)
@@ -243,6 +241,7 @@ func (d *HTTPDownloader) Download(ctx context.Context, task *types.DownloadTask,
 		existingState, _ = LoadOShinState(oshinPath)
 	}
 	if existingState != nil {
+		task.SetStatus(types.TaskStatusResuming)
 		if task.Metadata.Size <= 0 {
 			task.Metadata.Size = existingState.TotalSize
 		}
@@ -299,12 +298,19 @@ func (d *HTTPDownloader) Download(ctx context.Context, task *types.DownloadTask,
 				task.Config.ChecksumValue = parts[1]
 			}
 		}
+		// 将已恢复分片的字节数加入进度，避免进度从 0 开始
+		if totalDownloaded > 0 {
+			task.Progress.AddDownloaded(totalDownloaded)
+		}
 		resumedFromState = true
 	} else {
 		if err := d.initChunks(task); err != nil {
 			return fmt.Errorf("failed to init chunks: %w", err)
 		}
 	}
+
+	// resume 阶段结束，进入下载
+	task.SetStatus(types.TaskStatusDownloading)
 
 	// 在所有预下载消息（resume/init 提示）输出完毕后再启动进度显示
 	// 避免 reporter 的 ANSI 清行与这些消息交错导致显示混乱
@@ -678,6 +684,7 @@ type ProgressReporter struct {
 	maxOutputLines  int       // 历史最大输出行数（用于可靠清除）
 	started         bool      // 是否已输出过至少一次
 	stopOnce        sync.Once // 确保 Stop() 只执行一次
+	frameCount      int       // 动画帧计数（用于 spinner）
 	OnReport        func(lines []string) // 回调：输出进度行
 	OnStop          func(maxLines int)   // 回调：停止时清除进度区
 }
@@ -723,16 +730,18 @@ func (r *ProgressReporter) Stop() {
 // report 报告当前进度
 // 每帧输出格式：
 //
-//	[=====================>               ] 65.3% | 31.61 MB/s | ETA: 12s
+//	⠋ [=====================>               ] 65.3% | 31.61 MB/s | ETA: 12s
 //	Threads: 4/4  |  Remaining: 8 chunks  |  Failed: 0
 //	── Active Threads ──
-//	[T0] Chunk#3  [########........]  62.3%  | 8.2 MB/s
-//	[T1] Chunk#7  [######..........]  31.1%  | 7.8 MB/s
+//	[T0] Chunk#3  [########........]  62.3%
+//	[T1] Chunk#7  [######..........]  31.1%
 func (r *ProgressReporter) report() {
-	if r.task.Metadata.Size <= 0 {
+	totalChunks := len(r.task.Chunks)
+	if totalChunks == 0 {
 		return
 	}
 
+	completedChunks := r.task.GetCompletedChunkCount()
 	downloaded := r.task.Progress.GetDownloaded()
 	total := r.task.Metadata.Size
 
@@ -740,20 +749,30 @@ func (r *ProgressReporter) report() {
 	speed := r.task.Progress.CalculateSpeed()
 
 	var eta time.Duration
-	if speed > 0 && downloaded < total {
+	if speed > 0 && total > 0 && downloaded < total {
 		remaining := float64(total-downloaded) / speed
 		eta = time.Duration(remaining * float64(time.Second))
 	}
 
+	// spinner 动画
+	spinner := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+	r.frameCount++
+	spinChar := spinner[r.frameCount%len(spinner)]
+
 	var lines []string
 
-	// 第1行：进度条 + 百分比 + 速度 + ETA
-	progress := float64(downloaded) / float64(total) * 100
-	bar := r.buildProgressBar(40)
+	// 第1行：spinner + 进度条（基于已完成分片数） + 速度 + ETA
+	progress := float64(completedChunks) / float64(totalChunks) * 100
+	bar := r.buildProgressBar(progress, 40)
 	if speed > 0 {
-		lines = append(lines, fmt.Sprintf("  %s %5.1f%% | %s/s | ETA: %s", bar, progress, formatBytes(int64(speed)), formatDuration(eta)))
+		lines = append(lines, fmt.Sprintf("  %c %s %5.1f%% | %s/s | ETA: %s",
+			spinChar, bar, progress, formatBytes(int64(speed)), formatDuration(eta)))
+	} else if downloaded > 0 {
+		lines = append(lines, fmt.Sprintf("  %c %s %5.1f%% | %s downloaded",
+			spinChar, bar, progress, formatBytes(downloaded)))
 	} else {
-		lines = append(lines, fmt.Sprintf("  %s %5.1f%% | connecting...", bar, progress))
+		lines = append(lines, fmt.Sprintf("  %c %s %5.1f%% | connecting...",
+			spinChar, bar, progress))
 	}
 
 	// 第2行：线程统计
@@ -763,8 +782,7 @@ func (r *ProgressReporter) report() {
 	lines = append(lines, fmt.Sprintf("  Threads: %d/%d  |  Remaining: %d chunks  |  Failed: %d",
 		activeThreads, r.task.Config.MaxConnections, remainingChunks, failedChunks))
 
-	// 第3行起：活跃线程详情（只显示 DOWNLOADING 状态的分片，无速度列）
-	// 通过线程安全方法获取活跃分片快照，避免与下载 goroutine 写操作竞争
+	// 第3行起：活跃线程详情
 	activeChunks := r.task.GetActiveChunks()
 
 	if len(activeChunks) > 0 {
@@ -798,16 +816,16 @@ func (r *ProgressReporter) report() {
 	}
 }
 
-// buildProgressBar 构建基于字节百分比的主进度条
-func (r *ProgressReporter) buildProgressBar(width int) string {
-	downloaded := r.task.Progress.GetDownloaded()
-	total := r.task.Metadata.Size
-	if total <= 0 {
-		return "[" + strings.Repeat(" ", width) + "]"
+// buildProgressBar 构建主进度条
+func (r *ProgressReporter) buildProgressBar(progress float64, width int) string {
+	if progress < 0 {
+		progress = 0
+	}
+	if progress > 100 {
+		progress = 100
 	}
 
-	ratio := float64(downloaded) / float64(total)
-	filled := int(ratio * float64(width))
+	filled := int(progress / 100.0 * float64(width))
 	if filled > width {
 		filled = width
 	}

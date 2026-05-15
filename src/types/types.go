@@ -12,10 +12,10 @@ import (
 type Protocol int
 
 const (
-	ProtocolHTTP  Protocol = iota // HTTP 协议
-	ProtocolHTTPS                 // HTTPS 协议
-	ProtocolFTP                   // FTP 协议
-	ProtocolSFTP                  // SFTP 协议
+	ProtocolHTTP Protocol = iota
+	ProtocolHTTPS
+	ProtocolFTP
+	ProtocolSFTP
 )
 
 // String 返回协议的字符串表示
@@ -54,10 +54,10 @@ func ParseProtocol(s string) Protocol {
 type ChunkStatus int
 
 const (
-	ChunkStatusPending     ChunkStatus = iota // 待下载
-	ChunkStatusDownloading                    // 下载中
-	ChunkStatusCompleted                      // 已完成
-	ChunkStatusFailed                         // 失败
+	ChunkStatusPending ChunkStatus = iota
+	ChunkStatusDownloading
+	ChunkStatusCompleted
+	ChunkStatusFailed
 )
 
 // String 返回分片状态的字符串表示
@@ -80,13 +80,14 @@ func (s ChunkStatus) String() string {
 type TaskStatus int
 
 const (
-	TaskStatusPending     TaskStatus = iota // 待开始
-	TaskStatusProbing                       // 探测中
-	TaskStatusDownloading                   // 下载中
-	TaskStatusVerifying                     // 校验中
-	TaskStatusCompleted                     // 已完成
-	TaskStatusFailed                        // 失败
-	TaskStatusPaused                        // 已暂停
+	TaskStatusPending TaskStatus = iota
+	TaskStatusProbing
+	TaskStatusDownloading
+	TaskStatusVerifying
+	TaskStatusCompleted
+	TaskStatusFailed
+	TaskStatusPaused
+	TaskStatusResuming
 )
 
 // String 返回任务状态的字符串表示
@@ -106,6 +107,8 @@ func (s TaskStatus) String() string {
 		return "FAILED"
 	case TaskStatusPaused:
 		return "PAUSED"
+	case TaskStatusResuming:
+		return "RESUMING"
 	default:
 		return "UNKNOWN"
 	}
@@ -136,7 +139,6 @@ type ChunkInfo struct {
 	Downloaded  int64             // 当前分片已下载字节数
 	Headers     map[string]string // 下载请求头（存储实际使用的请求头）
 
-	// 工作窃取相关字段
 	ConnectionID int // 连接 ID（用于工作窃取）
 }
 
@@ -212,10 +214,10 @@ func ValidateConfig(config *DownloadConfig) {
 	// 确保分片大小合理（最小 64KB，最大 1GB）
 	const minChunkSize = 64 * 1024          // 64KB
 	const maxChunkSize = 1024 * 1024 * 1024 // 1GB
-	if config.ChunkSize < minChunkSize {
+	if config.ChunkSize <= minChunkSize {
 		config.ChunkSize = minChunkSize
 	}
-	if config.ChunkSize > maxChunkSize {
+	if config.ChunkSize >= maxChunkSize {
 		config.ChunkSize = maxChunkSize
 	}
 }
@@ -428,6 +430,19 @@ func (t *DownloadTask) UpdateChunkStatus(index int, status ChunkStatus) {
 	}
 }
 
+// GetCompletedChunkCount 返回已完成的分片数量
+func (t *DownloadTask) GetCompletedChunkCount() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	count := 0
+	for _, chunk := range t.Chunks {
+		if chunk.Status == ChunkStatusCompleted {
+			count++
+		}
+	}
+	return count
+}
+
 // GetActiveChunks 返回当前 DOWNLOADING 状态的分片列表
 // 用于 ProgressReporter 读取活跃分片信息，避免直接遍历 Chunks 切片造成数据竞争
 func (t *DownloadTask) GetActiveChunks() []*ChunkInfo {
@@ -483,7 +498,6 @@ func (t *DownloadTask) GetChunkSnapshots() []ChunkSnapshot {
 
 // generateTaskID 生成任务唯一标识
 func generateTaskID() string {
-	// 使用 crypto/rand 生成唯一 ID
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	return fmt.Sprintf("%s-%x", time.Now().Format("20060102150405"), b)
@@ -493,13 +507,13 @@ func generateTaskID() string {
 type ConnectionState int
 
 const (
-	ConnectionStateIdle      ConnectionState = iota // 空闲
-	ConnectionStateResolving                        // 解析中
-	ConnectionStateResolved                         // 已解析
-	ConnectionStateSlowStart                        // 慢启动
-	ConnectionStateSteady                           // 稳定
-	ConnectionStateDone                             // 完成
-	ConnectionStateError                            // 错误
+	ConnectionStateIdle ConnectionState = iota
+	ConnectionStateResolving
+	ConnectionStateResolved
+	ConnectionStateSlowStart
+	ConnectionStateSteady
+	ConnectionStateDone
+	ConnectionStateError
 )
 
 // String 返回连接状态的字符串表示

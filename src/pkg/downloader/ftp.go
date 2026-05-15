@@ -27,8 +27,6 @@ func NewFTPDownloader() *FTPDownloader {
 // Download 建立 FTP 连接并下载文件（支持断点续传）
 // reporter 参数用于在所有预下载消息（连接、登录等）输出完毕后才启动进度显示
 func (d *FTPDownloader) Download(ctx context.Context, task *types.DownloadTask, reporter *ProgressReporter) error {
-	task.SetStatus(types.TaskStatusDownloading)
-
 	host, port, path, err := d.parseFTPAddress(task.URL)
 	if err != nil {
 		return fmt.Errorf("invalid FTP address: %w", err)
@@ -76,6 +74,7 @@ func (d *FTPDownloader) Download(ctx context.Context, task *types.DownloadTask, 
 		existingState, _ = LoadOShinState(oshinPath)
 	}
 	if existingState != nil {
+		task.SetStatus(types.TaskStatusResuming)
 		if task.Metadata.Size <= 0 {
 			task.Metadata.Size = existingState.TotalSize
 		}
@@ -101,6 +100,9 @@ func (d *FTPDownloader) Download(ctx context.Context, task *types.DownloadTask, 
 			task.Config.Headers = existingState.Headers
 		}
 	}
+
+	// resume 阶段结束，进入下载
+	task.SetStatus(types.TaskStatusDownloading)
 
 	// 在所有预下载消息输出完毕后再启动进度显示
 	if reporter != nil {
