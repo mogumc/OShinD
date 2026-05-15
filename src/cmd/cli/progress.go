@@ -99,21 +99,21 @@ func (m progressModel) View() string {
 	if m.status != 0 {
 		switch m.status {
 		case types.TaskStatusPending:
-			statusLine = "  ⏳ Pending..."
+			statusLine = "  ⏳ " + statusPending
 		case types.TaskStatusProbing:
-			statusLine = "  🔍 Probing server..."
+			statusLine = "  🔍 " + statusProbing
 		case types.TaskStatusDownloading:
-			statusLine = "  ⚡️ Downloading..."
+			statusLine = "  ⚡️ " + statusDownloading
 		case types.TaskStatusVerifying:
-			statusLine = "  ✅ Verifying checksum..."
+			statusLine = "  ✅ " + statusVerifying
 		case types.TaskStatusCompleted:
-			statusLine = "  ✅ Completed"
+			statusLine = "  ✅ " + statusCompleted
 		case types.TaskStatusFailed:
-			statusLine = "  ❌ Failed"
+			statusLine = "  ❌ " + statusFailed
 		case types.TaskStatusPaused:
-			statusLine = "  ⏸️ Paused"
+			statusLine = "  ⏸️ " + statusPaused
 		case types.TaskStatusResuming:
-			statusLine = "  🔄 Resuming..."
+			statusLine = "  🔄 " + statusResuming
 		default:
 			statusLine = fmt.Sprintf("  Status: %s", m.status.String())
 		}
@@ -190,16 +190,16 @@ func formatBytes(bytes int64) string {
 // printSuccess 输出成功信息（TTY 用 lipgloss，非 TTY 用 plain text）
 func printSuccess(fileName string, size int64) {
 	if isInteractive() {
-		msg := fmt.Sprintf("Saved: %s", fileName)
+		msg := fmt.Sprintf("%s: %s", sumSaved, fileName)
 		if size > 0 {
-			msg = fmt.Sprintf("Saved: %s (%s)", fileName, formatBytes(size))
+			msg = fmt.Sprintf("%s: %s (%s)", sumSaved, fileName, formatBytes(size))
 		}
 		fmt.Println("\n" + SuccessStyle.Render("✓ ") + SavedStyle.Render(msg))
 	} else {
 		if size > 0 {
-			fmt.Printf("Saved: %s (%s)\n", fileName, formatBytes(size))
+			fmt.Printf("%s: %s (%s)\n", sumSaved, fileName, formatBytes(size))
 		} else {
-			fmt.Printf("Saved: %s\n", fileName)
+			fmt.Printf("%s: %s\n", sumSaved, fileName)
 		}
 	}
 }
@@ -219,84 +219,84 @@ func printDownloadSummary(task *types.DownloadTask) {
 
 	if isInteractive() {
 		fmt.Println()
-		fmt.Println(renderDivider("Download Summary"))
+		fmt.Println(renderDivider(sumTitle))
 		fmt.Println()
 
 		// probe 信息
-		fmt.Println(renderKV("URL", task.URL))
+		fmt.Println(renderKV(sumURL, task.URL))
 		if task.Metadata != nil {
 			if task.Metadata.FileName != "" {
-				fmt.Println(renderKV("File", task.Metadata.FileName))
+				fmt.Println(renderKV(sumFile, task.Metadata.FileName))
 			}
 			if task.Metadata.Size > 0 {
-				fmt.Println(renderKV("Size", formatBytes(task.Metadata.Size)))
+				fmt.Println(renderKV(sumSize, formatBytes(task.Metadata.Size)))
 			}
 			if task.Metadata.ContentType != "" {
-				fmt.Println(renderKV("Type", task.Metadata.ContentType))
+				fmt.Println(renderKV(sumType, task.Metadata.ContentType))
 			}
-			fmt.Println(renderKV("Resume", fmt.Sprintf("%v", task.Metadata.SupportResume)))
+			fmt.Println(renderKV(sumResume, fmt.Sprintf("%v", task.Metadata.SupportResume)))
 			if task.Metadata.Checksum != "" {
 				if task.Metadata.ChecksumType != "" {
-					fmt.Println(renderKV("Checksum", fmt.Sprintf("%s:%s", task.Metadata.ChecksumType, task.Metadata.Checksum)))
+					fmt.Println(renderKV(sumChecksum, fmt.Sprintf("%s:%s", task.Metadata.ChecksumType, task.Metadata.Checksum)))
 				} else {
-					fmt.Println(renderKV("Checksum", task.Metadata.Checksum))
+					fmt.Println(renderKV(sumChecksum, task.Metadata.Checksum))
 				}
 			}
 		}
-		fmt.Println(renderKV("Protocol", task.Protocol.String()))
+		fmt.Println(renderKV(sumProtocol, task.Protocol.String()))
 
 		// 验证信息
 		if task.Verify != nil {
 			fmt.Println()
-			fmt.Println(renderDivider("Verification"))
+			fmt.Println(renderDivider(T("验证", "Verification")))
 			fmt.Println()
 			if task.Verify.Skipped {
-				fmt.Println(renderKV("Status", "Skipped"))
-				fmt.Println(renderKV("Reason", "No checksum available"))
+				fmt.Println(renderKV(T("状态", "Status"), verifySkipped))
+				fmt.Println(renderKV(T("原因", "Reason"), verifyNoChecksum))
 			} else {
-				fmt.Println(renderKV("Method", task.Verify.Method))
-				fmt.Println(renderKV("Expected", task.Verify.Expected))
-				fmt.Println(renderKV("Actual", task.Verify.Actual))
+				fmt.Println(renderKV(verifyMethod, task.Verify.Method))
+				fmt.Println(renderKV(verifyExpected, task.Verify.Expected))
+				fmt.Println(renderKV(verifyActual, task.Verify.Actual))
 				if task.Verify.Passed {
-					fmt.Println(renderKV("Result", SuccessStyle.Render("PASSED")))
+					fmt.Println(renderKV(verifyResult, SuccessStyle.Render(verifyPassed)))
 				} else {
-					fmt.Println(renderKV("Result", ErrorStyle.Render("FAILED")))
+					fmt.Println(renderKV(verifyResult, ErrorStyle.Render(verifyFailed)))
 				}
 			}
 		}
 		fmt.Println()
 	} else {
-		fmt.Printf("Download Summary:\n")
-		fmt.Printf("  URL:       %s\n", task.URL)
+		fmt.Printf("%s:\n", sumTitle)
+		fmt.Printf("  %-10s%s\n", sumURL+":", task.URL)
 		if task.Metadata != nil {
 			if task.Metadata.FileName != "" {
-				fmt.Printf("  File:      %s\n", task.Metadata.FileName)
+				fmt.Printf("  %-10s%s\n", sumFile+":", task.Metadata.FileName)
 			}
 			if task.Metadata.Size > 0 {
-				fmt.Printf("  Size:      %s\n", formatBytes(task.Metadata.Size))
+				fmt.Printf("  %-10s%s\n", sumSize+":", formatBytes(task.Metadata.Size))
 			}
 			if task.Metadata.ContentType != "" {
-				fmt.Printf("  Type:      %s\n", task.Metadata.ContentType)
+				fmt.Printf("  %-10s%s\n", sumType+":", task.Metadata.ContentType)
 			}
-			fmt.Printf("  Resume:    %v\n", task.Metadata.SupportResume)
+			fmt.Printf("  %-10s%v\n", sumResume+":", task.Metadata.SupportResume)
 			if task.Metadata.Checksum != "" {
-				fmt.Printf("  Checksum:  %s\n", task.Metadata.Checksum)
+				fmt.Printf("  %-10s%s\n", sumChecksum+":", task.Metadata.Checksum)
 			}
 		}
-		fmt.Printf("  Protocol:  %s\n", task.Protocol.String())
+		fmt.Printf("  %-10s%s\n", sumProtocol+":", task.Protocol.String())
 
 		if task.Verify != nil {
-			fmt.Printf("Verification:\n")
+			fmt.Printf("%s:\n", T("验证", "Verification"))
 			if task.Verify.Skipped {
-				fmt.Printf("  Status:    Skipped (no checksum available)\n")
+				fmt.Printf("  %-10s%s (%s)\n", T("状态", "Status")+":", verifySkipped, verifyNoChecksum)
 			} else {
-				fmt.Printf("  Method:    %s\n", task.Verify.Method)
-				fmt.Printf("  Expected:  %s\n", task.Verify.Expected)
-				fmt.Printf("  Actual:    %s\n", task.Verify.Actual)
+				fmt.Printf("  %-10s%s\n", verifyMethod+":", task.Verify.Method)
+				fmt.Printf("  %-10s%s\n", verifyExpected+":", task.Verify.Expected)
+				fmt.Printf("  %-10s%s\n", verifyActual+":", task.Verify.Actual)
 				if task.Verify.Passed {
-					fmt.Printf("  Result:    PASSED\n")
+					fmt.Printf("  %-10s%s\n", verifyResult+":", verifyPassed)
 				} else {
-					fmt.Printf("  Result:    FAILED\n")
+					fmt.Printf("  %-10s%s\n", verifyResult+":", verifyFailed)
 				}
 			}
 		}
@@ -431,24 +431,26 @@ func (r *ProgressReporter) report() {
 		lines = append(lines, fmt.Sprintf("  %c %s %5.1f%% | %s/s | ETA: %s",
 			spinChar, bar, progress, formatBytes(int64(speed)), formatDuration(eta)))
 	} else if downloaded > 0 {
-		lines = append(lines, fmt.Sprintf("  %c %s %5.1f%% | %s downloaded",
-			spinChar, bar, progress, formatBytes(downloaded)))
+		lines = append(lines, fmt.Sprintf("  %c %s %5.1f%% | %s %s",
+			spinChar, bar, progress, formatBytes(downloaded), progressDownloaded))
 	} else {
-		lines = append(lines, fmt.Sprintf("  %c %s %5.1f%% | connecting...",
-			spinChar, bar, progress))
+		lines = append(lines, fmt.Sprintf("  %c %s %5.1f%% | %s",
+			spinChar, bar, progress, progressConnecting))
 	}
 
 	// 第2行：线程统计
 	activeThreads := r.task.Progress.GetActiveThreads()
 	remainingChunks := r.task.Progress.GetRemainingChunks()
 	failedChunks := r.task.Progress.GetFailedChunks()
-	lines = append(lines, fmt.Sprintf("  Threads: %d/%d  |  Remaining: %d chunks  |  Failed: %d",
-		activeThreads, r.task.Config.MaxConnections, remainingChunks, failedChunks))
+	lines = append(lines, fmt.Sprintf("  %s: %d/%d  |  %s: %d %s  |  %s: %d",
+		progressThreads, activeThreads, r.task.Config.MaxConnections,
+		progressRemaining, remainingChunks, progressChunks,
+		progressFailed, failedChunks))
 
 	// 第3行起：活跃线程详情
 	activeChunks := r.task.GetActiveChunks()
 	if len(activeChunks) > 0 {
-		lines = append(lines, "  ── Active Threads ──")
+		lines = append(lines, "  ── "+progressActive+" ──")
 		for i, chunk := range activeChunks {
 			chunkSize := chunk.End - chunk.Start + 1
 			chunkProgress := 0.0

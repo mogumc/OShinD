@@ -40,8 +40,8 @@ func main() {
 	case "help", "-h", "--help":
 		printUsage()
 	default:
-		printError(fmt.Sprintf("unknown command: %s", cmd))
-		fmt.Fprintln(os.Stderr, "Run 'oshind help' for usage.")
+		printError(fmt.Sprintf("%s: %s", errUnknownCommand, cmd))
+		fmt.Fprintln(os.Stderr, errRunHelp)
 		os.Exit(1)
 	}
 }
@@ -55,32 +55,32 @@ func printUsage() {
 
 	fmt.Println(TitleStyle.Render("OShinD - v" + version))
 	fmt.Println()
-	fmt.Println(renderDivider("Commands"))
-	printCmd("  download, dl", "  <url> [options]", "Start a download")
-	printCmd("  probe", "        <url> [options]", "Probe server info")
-	printCmd("  has-resume", "   <dir> <file>", "Check resume state")
-	printCmd("  clear-resume", " <dir> <file>", "Clear resume state")
-	printCmd("  version", "", "Show version")
-	printCmd("  help", "", "Show this help")
+	fmt.Println(renderDivider(hSecCommands))
+	printCmd("  download, dl", "  <url> [options]", hCmdDownload)
+	printCmd("  probe", "        <url> [options]", hCmdProbe)
+	printCmd("  has-resume", "   <dir> <file>", hCmdHasResume)
+	printCmd("  clear-resume", " <dir> <file>", hCmdClear)
+	printCmd("  version", "", hCmdVersion)
+	printCmd("  help", "", hCmdHelp)
 	fmt.Println()
-	fmt.Println(renderDivider("Options"))
-	printOpt("-o, --output <dir>", "Output directory (default: .)")
-	printOpt("-c, --connections <n>", "Max connections (default: 4)")
-	printOpt("-s, --chunk-size <size>", "Chunk size, e.g. 8m, 1m")
-	printOpt("-t, --timeout <duration>", "Request timeout (default: 30s)")
-	printOpt("-r, --retry <n>", "Retry count (default: 3)")
-	printOpt("-H, --header <key:value>", "Custom HTTP header")
-	printOpt("-m, --multi-source <url>", "Additional download source")
-	printOpt("-u, --user <username>", "FTP/SFTP username")
-	printOpt("-p, --password <password>", "FTP/SFTP password")
-	printOpt("--ftp-port <port>", "FTP port (default: 21)")
-	printOpt("--sftp-port <port>", "SFTP port (default: 22)")
-	printOpt("--skip-tls-verify", "Skip TLS verification")
-	printOpt("--no-checksum", "Skip checksum verification")
-	printOpt("--no-resume", "Disable resume support")
-	printOpt("--checksum-type <type>", "Checksum algorithm (md5/sha1/sha256)")
-	printOpt("--checksum-value <value>", "Expected checksum value")
-	printOpt("--checksum <type:value>", "Checksum as type:value")
+	fmt.Println(renderDivider(hSecOptions))
+	printOpt("-o, --output <dir>", hOptOutput)
+	printOpt("-c, --connections <n>", hOptConn)
+	printOpt("-s, --chunk-size <size>", hOptChunk)
+	printOpt("-t, --timeout <duration>", hOptTimeout)
+	printOpt("-r, --retry <n>", hOptRetry)
+	printOpt("-H, --header <key:value>", hOptHeader)
+	printOpt("-m, --multi-source <url>", hOptMulti)
+	printOpt("-u, --user <username>", hOptUser)
+	printOpt("-p, --password <password>", hOptPass)
+	printOpt("--ftp-port <port>", hOptFtpPort)
+	printOpt("--sftp-port <port>", hOptSftpPort)
+	printOpt("--skip-tls-verify", hOptNoTLS)
+	printOpt("--no-checksum", hOptNoCheck)
+	printOpt("--no-resume", hOptNoResume)
+	printOpt("--checksum-type <type>", hOptCkType)
+	printOpt("--checksum-value <value>", hOptCkValue)
+	printOpt("--checksum <type:value>", hOptCkBoth)
 }
 
 func printPlainUsage() {
@@ -88,32 +88,32 @@ func printPlainUsage() {
 	fmt.Println()
 	fmt.Println("Usage: oshind <command> [options]")
 	fmt.Println()
-	fmt.Println("Commands:")
-	fmt.Println("  download, dl   <url> [options]   Start a download")
-	fmt.Println("  probe          <url> [options]   Probe server info")
-	fmt.Println("  has-resume     <dir> <file>      Check resume state")
-	fmt.Println("  clear-resume   <dir> <file>      Clear resume state")
-	fmt.Println("  version                          Show version")
-	fmt.Println("  help                             Show this help")
+	fmt.Println(hSecCommands + ":")
+	fmt.Printf("  download, dl   <url> [options]   %s\n", hCmdDownload)
+	fmt.Printf("  probe          <url> [options]   %s\n", hCmdProbe)
+	fmt.Printf("  has-resume     <dir> <file>      %s\n", hCmdHasResume)
+	fmt.Printf("  clear-resume   <dir> <file>      %s\n", hCmdClear)
+	fmt.Printf("  version                          %s\n", hCmdVersion)
+	fmt.Printf("  help                             %s\n", hCmdHelp)
 	fmt.Println()
-	fmt.Println("Options:")
-	fmt.Println("  -o, --output <dir>              Output directory (default: .)")
-	fmt.Println("  -c, --connections <n>           Max connections (default: 4)")
-	fmt.Println("  -s, --chunk-size <size>         Chunk size, e.g. 8m, 1m")
-	fmt.Println("  -t, --timeout <duration>        Request timeout (default: 30s)")
-	fmt.Println("  -r, --retry <n>                 Retry count (default: 3)")
-	fmt.Println("  -H, --header <key:value>        Custom HTTP header")
-	fmt.Println("  -m, --multi-source <url>        Additional download source")
-	fmt.Println("  -u, --user <username>           FTP/SFTP username")
-	fmt.Println("  -p, --password <password>       FTP/SFTP password")
-	fmt.Println("  --ftp-port <port>               FTP port (default: 21)")
-	fmt.Println("  --sftp-port <port>              SFTP port (default: 22)")
-	fmt.Println("  --skip-tls-verify               Skip TLS verification")
-	fmt.Println("  --no-checksum                   Skip checksum verification")
-	fmt.Println("  --no-resume                     Disable resume support")
-	fmt.Println("  --checksum-type <type>          Checksum algorithm (md5/sha1/sha256)")
-	fmt.Println("  --checksum-value <value>        Expected checksum value")
-	fmt.Println("  --checksum <type:value>         Checksum as type:value")
+	fmt.Println(hSecOptions + ":")
+	fmt.Printf("  -o, --output <dir>              %s\n", hOptOutput)
+	fmt.Printf("  -c, --connections <n>           %s\n", hOptConn)
+	fmt.Printf("  -s, --chunk-size <size>         %s\n", hOptChunk)
+	fmt.Printf("  -t, --timeout <duration>        %s\n", hOptTimeout)
+	fmt.Printf("  -r, --retry <n>                 %s\n", hOptRetry)
+	fmt.Printf("  -H, --header <key:value>        %s\n", hOptHeader)
+	fmt.Printf("  -m, --multi-source <url>        %s\n", hOptMulti)
+	fmt.Printf("  -u, --user <username>           %s\n", hOptUser)
+	fmt.Printf("  -p, --password <password>       %s\n", hOptPass)
+	fmt.Printf("  --ftp-port <port>               %s\n", hOptFtpPort)
+	fmt.Printf("  --sftp-port <port>              %s\n", hOptSftpPort)
+	fmt.Printf("  --skip-tls-verify               %s\n", hOptNoTLS)
+	fmt.Printf("  --no-checksum                   %s\n", hOptNoCheck)
+	fmt.Printf("  --no-resume                     %s\n", hOptNoResume)
+	fmt.Printf("  --checksum-type <type>          %s\n", hOptCkType)
+	fmt.Printf("  --checksum-value <value>        %s\n", hOptCkValue)
+	fmt.Printf("  --checksum <type:value>         %s\n", hOptCkBoth)
 }
 
 func printCmd(cmd, args, desc string) {
@@ -136,7 +136,7 @@ func printVersion() {
 
 func handleDownload(args []string) {
 	if len(args) < 1 {
-		printError("url is required")
+		printError(errURLRequired)
 		fmt.Fprintln(os.Stderr, "Usage: oshind download <url> [options]")
 		os.Exit(1)
 	}
@@ -145,9 +145,9 @@ func handleDownload(args []string) {
 	config := parseArgs(args[1:])
 
 	if isInteractive() {
-		fmt.Println(InfoStyle.Render("↓ ") + fmt.Sprintf("Downloading: %s", rawURL))
+		fmt.Println(InfoStyle.Render("↓ ") + fmt.Sprintf("%s: %s", sumDownload, rawURL))
 	} else {
-		fmt.Printf("Download: %s\n", rawURL)
+		fmt.Printf("%s: %s\n", sumDownload, rawURL)
 	}
 
 	e := downloader.NewEngine(config)
@@ -197,14 +197,14 @@ func runBubbleTeaDownload(e *downloader.Engine, rawURL string, config *types.Dow
 	p := tea.NewProgram(model, tea.WithOutput(os.Stdout))
 	finalModel, runErr := p.Run()
 	if runErr != nil {
-		printError(fmt.Sprintf("tui error: %v", runErr))
+		printError(fmt.Sprintf("%s: %v", errTUIError, runErr))
 		os.Exit(1)
 	}
 
 	// 从最终 model 获取结果
 	m := finalModel.(progressModel)
 	if m.err != nil {
-		printError(fmt.Sprintf("download failed: %v", m.err))
+		printError(fmt.Sprintf("%s: %v", errDownloadFailed, m.err))
 		os.Exit(1)
 	}
 	if m.result != nil {
@@ -230,7 +230,7 @@ func runSimpleDownload(e *downloader.Engine, rawURL string, config *types.Downlo
 	}
 
 	if err != nil {
-		printError(fmt.Sprintf("download failed: %v", err))
+		printError(fmt.Sprintf("%s: %v", errDownloadFailed, err))
 		os.Exit(1)
 	}
 	printDownloadSummary(task)
@@ -240,7 +240,7 @@ func runSimpleDownload(e *downloader.Engine, rawURL string, config *types.Downlo
 
 func handleProbe(args []string) {
 	if len(args) < 1 {
-		printError("url is required")
+		printError(errURLRequired)
 		fmt.Fprintln(os.Stderr, "Usage: oshind probe <url> [options]")
 		os.Exit(1)
 	}
@@ -249,76 +249,76 @@ func handleProbe(args []string) {
 	config := parseArgs(args[1:])
 
 	if isInteractive() {
-		fmt.Println(InfoStyle.Render("⟳ ") + fmt.Sprintf("Probing: %s", rawURL))
+		fmt.Println(InfoStyle.Render("⟳ ") + fmt.Sprintf("%s: %s", sumProbe, rawURL))
 	} else {
-		fmt.Printf("Probing: %s\n", rawURL)
+		fmt.Printf("%s: %s\n", sumProbe, rawURL)
 	}
 
 	result, err := downloader.ProbeFull(rawURL, config)
 	if err != nil {
-		printError(fmt.Sprintf("probe failed: %v", err))
+		printError(fmt.Sprintf("%s: %v", errProbeFailed, err))
 		os.Exit(1)
 	}
 
 	fmt.Println()
 
 	if isInteractive() {
-		fmt.Println(renderDivider("Probe Result"))
+		fmt.Println(renderDivider(probeLabel))
 		fmt.Println()
-		fmt.Println(renderKV("URL", result.URL))
+		fmt.Println(renderKV(probeURL, result.URL))
 
 		if result.Metadata != nil {
 			if result.Metadata.FileName != "" {
-				fmt.Println(renderKV("File", result.Metadata.FileName))
+				fmt.Println(renderKV(probeFile, result.Metadata.FileName))
 			}
 			if result.Metadata.Size > 0 {
-				fmt.Println(renderKV("Size", formatBytes(result.Metadata.Size)))
+				fmt.Println(renderKV(probeSize, formatBytes(result.Metadata.Size)))
 			}
 			if result.Metadata.ContentType != "" {
-				fmt.Println(renderKV("Type", result.Metadata.ContentType))
+				fmt.Println(renderKV(probeType, result.Metadata.ContentType))
 			}
-			fmt.Println(renderKV("Resume", fmt.Sprintf("%v", result.Metadata.SupportResume)))
+			fmt.Println(renderKV(probeResume, fmt.Sprintf("%v", result.Metadata.SupportResume)))
 			if result.Metadata.Checksum != "" {
 				if result.Metadata.ChecksumType != "" {
-					fmt.Println(renderKV("Checksum", fmt.Sprintf("%s:%s", result.Metadata.ChecksumType, result.Metadata.Checksum)))
+					fmt.Println(renderKV(sumChecksum, fmt.Sprintf("%s:%s", result.Metadata.ChecksumType, result.Metadata.Checksum)))
 				} else {
-					fmt.Println(renderKV("Checksum", result.Metadata.Checksum))
+					fmt.Println(renderKV(sumChecksum, result.Metadata.Checksum))
 				}
 			}
 		}
 		if result.ServerInfo != nil {
-			fmt.Println(renderKV("Server", fmt.Sprintf("%s:%s (%s)", result.ServerInfo.Host, result.ServerInfo.Port, result.ServerInfo.Scheme)))
+			fmt.Println(renderKV(probeServer, fmt.Sprintf("%s:%s (%s)", result.ServerInfo.Host, result.ServerInfo.Port, result.ServerInfo.Scheme)))
 		}
 		if result.EstimatedSpeed > 0 {
-			fmt.Println(renderKV("Speed", fmt.Sprintf("%s/s", formatBytes(int64(result.EstimatedSpeed)))))
+			fmt.Println(renderKV(probeSpeed, fmt.Sprintf("%s/s", formatBytes(int64(result.EstimatedSpeed)))))
 		}
 		fmt.Println()
 	} else {
-		fmt.Printf("URL:        %s\n", result.URL)
+		fmt.Printf("%-11s%s\n", probeURL+":", result.URL)
 		if result.Metadata != nil {
 			if result.Metadata.FileName != "" {
-				fmt.Printf("File:       %s\n", result.Metadata.FileName)
+				fmt.Printf("%-11s%s\n", probeFile+":", result.Metadata.FileName)
 			}
 			if result.Metadata.Size > 0 {
-				fmt.Printf("Size:       %s\n", formatBytes(result.Metadata.Size))
+				fmt.Printf("%-11s%s\n", probeSize+":", formatBytes(result.Metadata.Size))
 			}
 			if result.Metadata.ContentType != "" {
-				fmt.Printf("Type:       %s\n", result.Metadata.ContentType)
+				fmt.Printf("%-11s%s\n", probeType+":", result.Metadata.ContentType)
 			}
-			fmt.Printf("Resume:     %v\n", result.Metadata.SupportResume)
+			fmt.Printf("%-11s%v\n", probeResume+":", result.Metadata.SupportResume)
 			if result.Metadata.Checksum != "" {
 				if result.Metadata.ChecksumType != "" {
-					fmt.Println(renderKV("Checksum", fmt.Sprintf("%s:%s", result.Metadata.ChecksumType, result.Metadata.Checksum)))
+					fmt.Printf("%-11s%s:%s\n", sumChecksum+":", result.Metadata.ChecksumType, result.Metadata.Checksum)
 				} else {
-					fmt.Println(renderKV("Checksum", result.Metadata.Checksum))
+					fmt.Printf("%-11s%s\n", sumChecksum+":", result.Metadata.Checksum)
 				}
 			}
 		}
 		if result.ServerInfo != nil {
-			fmt.Printf("Server:     %s:%s (%s)\n", result.ServerInfo.Host, result.ServerInfo.Port, result.ServerInfo.Scheme)
+			fmt.Printf("%-11s%s:%s (%s)\n", probeServer+":", result.ServerInfo.Host, result.ServerInfo.Port, result.ServerInfo.Scheme)
 		}
 		if result.EstimatedSpeed > 0 {
-			fmt.Printf("Speed:      %s/s\n", formatBytes(int64(result.EstimatedSpeed)))
+			fmt.Printf("%-11s%s/s\n", probeSpeed+":", formatBytes(int64(result.EstimatedSpeed)))
 		}
 	}
 }
@@ -327,7 +327,7 @@ func handleProbe(args []string) {
 
 func handleHasResume(args []string) {
 	if len(args) < 2 {
-		printError("output_dir and file_name are required")
+		printError(errDirFileRequired)
 		fmt.Fprintln(os.Stderr, "Usage: oshind has-resume <dir> <file>")
 		os.Exit(1)
 	}
@@ -340,22 +340,22 @@ func handleHasResume(args []string) {
 	state, _ := downloader.LoadOShinState(oshinPath)
 	if state == nil {
 		if isInteractive() {
-			fmt.Println(WarningStyle.Render("  ⚠ ") + "No resume state found")
+			fmt.Println(WarningStyle.Render("  ⚠ ") + sumNoResume)
 		} else {
-			fmt.Println("No resume state found")
+			fmt.Println(sumNoResume)
 		}
 		return
 	}
 
 	if isInteractive() {
 		fmt.Println()
-		fmt.Println(renderDivider("Resume State"))
+		fmt.Println(renderDivider(sumResumeState))
 		fmt.Println()
-		fmt.Println(renderKV("URL", state.URL))
-		fmt.Println(renderKV("File", state.FileName))
-		fmt.Println(renderKV("Size", formatBytes(state.TotalSize)))
-		fmt.Println(renderKV("ChunkSize", formatBytes(state.ChunkSize)))
-		fmt.Println(renderKV("Chunks", fmt.Sprintf("%d", len(state.Chunks))))
+		fmt.Println(renderKV(probeURL, state.URL))
+		fmt.Println(renderKV(probeFile, state.FileName))
+		fmt.Println(renderKV(probeSize, formatBytes(state.TotalSize)))
+		fmt.Println(renderKV(sumChunkSize, formatBytes(state.ChunkSize)))
+		fmt.Println(renderKV(sumChunks, fmt.Sprintf("%d", len(state.Chunks))))
 
 		if len(state.Chunks) > 0 {
 			fmt.Println()
@@ -375,12 +375,12 @@ func handleHasResume(args []string) {
 		}
 		fmt.Println()
 	} else {
-		fmt.Printf("Resume state found:\n")
-		fmt.Printf("  URL:       %s\n", state.URL)
-		fmt.Printf("  File:      %s\n", state.FileName)
-		fmt.Printf("  Size:      %s\n", formatBytes(state.TotalSize))
-		fmt.Printf("  ChunkSize: %s\n", formatBytes(state.ChunkSize))
-		fmt.Printf("  Chunks:    %d\n", len(state.Chunks))
+		fmt.Printf("%s\n", sumResumeFound)
+		fmt.Printf("  %-10s%s\n", probeURL+":", state.URL)
+		fmt.Printf("  %-10s%s\n", probeFile+":", state.FileName)
+		fmt.Printf("  %-10s%s\n", probeSize+":", formatBytes(state.TotalSize))
+		fmt.Printf("  %-10s%s\n", sumChunkSize+":", formatBytes(state.ChunkSize))
+		fmt.Printf("  %-10s%d\n", sumChunks+":", len(state.Chunks))
 		for i, c := range state.Chunks {
 			fmt.Printf("    [%d] %s - %s\n", c.ID, formatBytes(c.Start), formatBytes(c.End))
 			if i > 10 {
@@ -395,7 +395,7 @@ func handleHasResume(args []string) {
 
 func handleClearResume(args []string) {
 	if len(args) < 2 {
-		printError("output_dir and file_name are required")
+		printError(errDirFileRequired)
 		fmt.Fprintln(os.Stderr, "Usage: oshind clear-resume <dir> <file>")
 		os.Exit(1)
 	}
@@ -406,14 +406,14 @@ func handleClearResume(args []string) {
 	oshinPath := downloader.GetOShinStatePath(outputPath)
 
 	if err := downloader.RemoveOShinState(oshinPath); err != nil {
-		printError(fmt.Sprintf("clear failed: %v", err))
+		printError(fmt.Sprintf("%s: %v", errClearFailed, err))
 		os.Exit(1)
 	}
 
 	if isInteractive() {
-		fmt.Println(SuccessStyle.Render("  ✓ ") + "Resume state cleared")
+		fmt.Println(SuccessStyle.Render("  ✓ ") + sumCleared)
 	} else {
-		fmt.Println("Resume state cleared")
+		fmt.Println(sumCleared)
 	}
 }
 
