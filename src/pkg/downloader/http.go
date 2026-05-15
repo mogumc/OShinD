@@ -73,7 +73,7 @@ func validateResumeFile(state *OShinState, tempPath string, task *types.Download
 		parts := strings.SplitN(state.ET, ":", 2)
 		if len(parts) == 2 {
 			checksumType, checksumValue := parts[0], parts[1]
-			if checksumType != task.Metadata.ChecksumType || checksumValue != task.Metadata.Checksum {
+			if (checksumType != task.Metadata.ChecksumType || checksumValue != task.Metadata.Checksum) && (checksumType != task.Config.ChecksumType || checksumValue != task.Config.ChecksumValue) {
 				return false
 			}
 		}
