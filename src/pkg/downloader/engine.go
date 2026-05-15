@@ -83,13 +83,14 @@ func (e *Engine) Download(ctx context.Context, rawURL string, config *types.Down
 
 		outputPath := e.getOutputPath(task)
 		task.SetStatus(types.TaskStatusVerifying)
-		skip, checkedPath, checkErr := checkExistingFile(outputPath, task)
+		skip, checkedPath, verifyResult, checkErr := checkExistingFile(outputPath, task)
 		if checkErr != nil {
 			task.SetStatus(types.TaskStatusFailed)
 			e.cleanupCancelFunc(task.ID)
 			return task, checkErr
 		}
 		if skip {
+			task.Verify = verifyResult
 			task.OutputPath = checkedPath
 			task.FileSize = task.Metadata.Size
 			task.SetStatus(types.TaskStatusCompleted)
@@ -191,13 +192,14 @@ func (e *Engine) SubmitDownload(rawURL string, config *types.DownloadConfig, onR
 			outputPath := e.getOutputPath(task)
 			if !task.Config.NoResume {
 				task.SetStatus(types.TaskStatusVerifying)
-				skip, checkedPath, checkErr := checkExistingFile(outputPath, task)
+				skip, checkedPath, verifyResult, checkErr := checkExistingFile(outputPath, task)
 				if checkErr != nil {
 					task.SetStatus(types.TaskStatusFailed)
 					e.cleanupCancelFunc(task.ID)
 					return
 				}
 				if skip {
+					task.Verify = verifyResult
 					task.OutputPath = checkedPath
 					task.FileSize = task.Metadata.Size
 					task.SetStatus(types.TaskStatusCompleted)

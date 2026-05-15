@@ -17,58 +17,43 @@ import (
 )
 
 // checkExistingFile 检查已存在的同名文件是否与待下载文件一致
-func checkExistingFile(outputPath string, task *types.DownloadTask) (skip bool, finalPath string, err error) {
+func checkExistingFile(outputPath string, task *types.DownloadTask) (skip bool, finalPath string, verifyResult *types.VerifyResult, err error) {
 	fi, statErr := os.Stat(outputPath)
 	if statErr != nil || fi == nil {
 		// 文件不存在，正常下载
-		return false, outputPath, nil
+		return false, outputPath, nil, nil
 	}
 
-	// 文件存在，确定有效校验值
-	var checksumType, checksumValue string
+	// 文件匹配语义：始终使用 probe 校验和判断文件是否一致（不受 AutoChecksum 影响）
+	savedAutoChecksum := task.Config.AutoChecksum
+	task.Config.AutoChecksum = true
+	result := VerifyTask(task, outputPath)
+	task.Config.AutoChecksum = savedAutoChecksum
 
-	// 优先级：用户指定 > probe 得到的 Checksum（含类型）
-	if task.Config.ChecksumType != "" && task.Config.ChecksumValue != "" {
-		checksumType = task.Config.ChecksumType
-		checksumValue = task.Config.ChecksumValue
-	} else if task.Metadata.Checksum != "" {
-		if task.Metadata.ChecksumType != "" {
-			checksumType = task.Metadata.ChecksumType
-		} else {
-			checksumType = "md5"
-		}
-		checksumValue = task.Metadata.Checksum
+	if result.Passed {
+		return true, outputPath, result, nil
 	}
 
-	if checksumType != "" && checksumValue != "" {
-		// 有校验值：计算文件校验和并比较
-		verifier := NewVerifier()
-		actual, calcErr := verifier.CalculateChecksum(outputPath, checksumType)
-		if calcErr != nil {
-			return false, "", fmt.Errorf("failed to calculate checksum: %w", calcErr)
-		}
-		if strings.EqualFold(actual, checksumValue) {
-			return true, outputPath, nil
-		}
+	if !result.Skipped {
 		// 校验不一致，重命名
 		newPath := findAvailablePath(outputPath)
-		if err := os.Rename(outputPath, newPath); err != nil {
-			return false, "", fmt.Errorf("failed to rename existing file: %w", err)
+		if renameErr := os.Rename(outputPath, newPath); renameErr != nil {
+			return false, "", result, fmt.Errorf("failed to rename existing file: %w", renameErr)
 		}
-		return false, newPath, nil
+		return false, newPath, result, nil
 	}
 
-	// 无校验值：比较文件大小
+	// VerifyTask 跳过（无校验源）：回退到文件大小比较
 	if task.Metadata.Size > 0 && fi.Size() == task.Metadata.Size {
-		return true, outputPath, nil
+		return true, outputPath, result, nil
 	}
 
 	// 大小不一致，重命名
 	newPath := findAvailablePath(outputPath)
-	if err := os.Rename(outputPath, newPath); err != nil {
-		return false, "", fmt.Errorf("failed to rename existing file: %w", err)
+	if renameErr := os.Rename(outputPath, newPath); renameErr != nil {
+		return false, "", result, fmt.Errorf("failed to rename existing file: %w", renameErr)
 	}
-	return false, newPath, nil
+	return false, newPath, result, nil
 }
 
 // validateResumeFile 校验续传时临时文件的一致性
