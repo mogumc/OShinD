@@ -86,7 +86,7 @@ func (d *SFTPDownloader) Download(ctx context.Context, task *types.DownloadTask,
 
 	// 尝试从 .oshin 文件恢复下载状态（除非指定了 --no-resume）
 	resumedFromState := false
-	var existingState *OShinStateV2
+	var existingState *OShinState
 	if !task.Config.NoResume {
 		existingState, _ = LoadOShinState(oshinPath)
 	}
@@ -214,7 +214,7 @@ func (d *SFTPDownloader) Download(ctx context.Context, task *types.DownloadTask,
 }
 
 // validateSFTPResumeFile 校验 SFTP 续传文件的有效性
-func (d *SFTPDownloader) validateSFTPResumeFile(state *OShinStateV2, tempPath string) bool {
+func (d *SFTPDownloader) validateSFTPResumeFile(state *OShinState, tempPath string) bool {
 	fi, err := os.Stat(tempPath)
 	if err != nil || fi == nil {
 		return false

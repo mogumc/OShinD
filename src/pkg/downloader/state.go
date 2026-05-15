@@ -1,7 +1,6 @@
 package downloader
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"sync"
@@ -13,52 +12,31 @@ import (
 )
 
 // stateVersion 当前 Protobuf 状态文件版本号
-const stateVersion = 3
+const stateVersion = 1
 
-// OShinStateV2 下载状态持久化文件（内部表示）
-// 只保存已完成的 chunks，大幅减小文件体积
+// OShinState
 // 每个 chunk 保存 start+end 起止位置，避免续传时重新计算范围出错
-type OShinStateV2 struct {
-	mu          sync.Mutex         `json:"-"`
-	filePath    string             `json:"-"`
-	V           int                `json:"v"`
-	URL         string             `json:"url"`
-	URLs        []string           `json:"urls,omitempty"`
-	FileName    string             `json:"file_name"`
-	TotalSize   int64              `json:"total_size"`
-	ChunkSize   int64              `json:"chunk_size"`
-	ET          string             `json:"et,omitempty"` // 校验信息，格式 "md5:..." 或 "sha256:..."
-	Chunks      []OShinChunkV2     `json:"chunks"`
-	Headers     map[string]string  `json:"headers,omitempty"`     // HTTP 自定义请求头
-	Protocol    string             `json:"protocol,omitempty"`    // 下载协议
-	Connections int32              `json:"connections,omitempty"` // 最大并发连接数
+type OShinState struct {
+	mu          sync.Mutex        `json:"-"`
+	filePath    string            `json:"-"`
+	V           int               `json:"v"`
+	URL         string            `json:"url"`
+	URLs        []string          `json:"urls,omitempty"`
+	FileName    string            `json:"file_name"`
+	TotalSize   int64             `json:"total_size"`
+	ChunkSize   int64             `json:"chunk_size"`
+	ET          string            `json:"et,omitempty"` // 校验信息，格式 "md5:..." 或 "sha256:..."
+	Chunks      []OShinChunk      `json:"chunks"`
+	Headers     map[string]string `json:"headers,omitempty"`     // HTTP 自定义请求头
+	Protocol    string            `json:"protocol,omitempty"`    // 下载协议
+	Connections int32             `json:"connections,omitempty"` // 最大并发连接数
 }
 
-// OShinChunkV2 单个已完成分片的持久化状态
-type OShinChunkV2 struct {
+// OShinChunk 单个已完成分片的持久化状态
+type OShinChunk struct {
 	ID    int   `json:"id"`
 	Start int64 `json:"start"` // 起始字节位置（含）
 	End   int64 `json:"end"`   // 结束字节位置（含）
-}
-
-// OShinStateV1 下载状态持久化文件（V1 兼容格式，用于读取旧 JSON 文件）
-type OShinStateV1 struct {
-	TaskID      string `json:"task_id"`
-	URL         string `json:"url"`
-	FileName    string `json:"file_name"`
-	TotalSize   int64  `json:"total_size"`
-	ChunkSize   int64  `json:"chunk_size"`
-	Protocol    string `json:"protocol"`
-	MultiSource bool   `json:"multi_source"`
-	Sources     []string `json:"sources,omitempty"`
-	Chunks      []struct {
-		Index      int    `json:"index"`
-		Start      int64  `json:"start"`
-		End        int64  `json:"end"`
-		Downloaded int64  `json:"downloaded"`
-		Status     string `json:"status"`
-		SourceURL  string `json:"source_url,omitempty"`
-	} `json:"chunks"`
 }
 
 // SaveOShinState 保存下载状态到 .oshin 文件（Protobuf 二进制格式）
@@ -116,87 +94,32 @@ func SaveOShinState(task *types.DownloadTask, filePath string) error {
 }
 
 // LoadOShinState 从 .oshin 文件加载下载状态
-// 自动检测格式：Protobuf 二进制（V3）/ JSON V2 / JSON V1，统一转为内部 V2 表示
-func LoadOShinState(filePath string) (*OShinStateV2, error) {
+// 自动检测格式：Protobuf 二进制
+func LoadOShinState(filePath string) (*OShinState, error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil // 文件不存在，全新下载
 		}
-		return nil, fmt.Errorf("failed to read state file: %w", err)
+		return nil, fmt.Errorf("state file not found: %w", err)
 	}
 
 	if len(data) == 0 {
 		return nil, nil
 	}
 
-	// 尝试 Protobuf 解析（V3 二进制格式）
-	// Protobuf 二进制的第一个字节通常 >= 0x08（field 1, wire type 0 = version varint）
-	// JSON 以 '{' (0x7B) 开头，可以通过首字节快速区分
-	if len(data) > 0 && data[0] != '{' {
-		pb := &pbtypes.OShinState{}
-		if err := proto.Unmarshal(data, pb); err == nil && pb.Version >= 3 {
-			return protoToStateV2(pb, filePath), nil
-		}
-		// Protobuf 解析失败，继续尝试 JSON
+	// 尝试 Protobuf 解析
+	pb := &pbtypes.OShinState{}
+	if err := proto.Unmarshal(data, pb); err == nil && pb.Version >= 1 {
+		return protoToState(pb, filePath), nil
 	}
 
-	// JSON 格式：检测版本
-	var versionProbe struct {
-		V int `json:"v"`
-	}
-	if err := json.Unmarshal(data, &versionProbe); err != nil {
-		return nil, fmt.Errorf("failed to parse state file: %w", err)
-	}
-
-	if versionProbe.V >= 2 {
-		// V2 JSON 格式
-		var state OShinStateV2
-		if err := json.Unmarshal(data, &state); err != nil {
-			return nil, fmt.Errorf("failed to parse V2 state file: %w", err)
-		}
-		state.filePath = filePath
-		return &state, nil
-	}
-
-	// V1 JSON 格式：解析后转换为 V2
-	var v1 OShinStateV1
-	if err := json.Unmarshal(data, &v1); err != nil {
-		return nil, fmt.Errorf("failed to parse V1 state file: %w", err)
-	}
-
-	state := &OShinStateV2{
-		filePath:  filePath,
-		V:         2,
-		URL:       v1.URL,
-		FileName:  v1.FileName,
-		TotalSize: v1.TotalSize,
-		ChunkSize: v1.ChunkSize,
-	}
-
-	// 构建 urls 列表
-	state.URLs = []string{v1.URL}
-	if len(v1.Sources) > 0 {
-		state.URLs = append(state.URLs, v1.Sources...)
-	}
-
-	// 过滤已完成的 chunks
-	for _, c := range v1.Chunks {
-		if c.Status == "COMPLETED" {
-			state.Chunks = append(state.Chunks, OShinChunkV2{
-				ID:    c.Index,
-				Start: c.Start,
-				End:   c.End,
-			})
-		}
-	}
-
-	return state, nil
+	return nil, fmt.Errorf("failed to read state file: %w", err)
 }
 
-// protoToStateV2 将 Protobuf 消息转换为内部 V2 表示
-func protoToStateV2(pb *pbtypes.OShinState, filePath string) *OShinStateV2 {
-	state := &OShinStateV2{
+// 将 Protobuf 消息转换为内部 V2 表示
+func protoToState(pb *pbtypes.OShinState, filePath string) *OShinState {
+	state := &OShinState{
 		filePath:    filePath,
 		V:           3,
 		URLs:        pb.Urls,
@@ -216,7 +139,7 @@ func protoToStateV2(pb *pbtypes.OShinState, filePath string) *OShinStateV2 {
 
 	// 转换 chunks
 	for _, c := range pb.Chunks {
-		state.Chunks = append(state.Chunks, OShinChunkV2{
+		state.Chunks = append(state.Chunks, OShinChunk{
 			ID:    int(c.Id),
 			Start: c.Start,
 			End:   c.End,
@@ -254,8 +177,8 @@ type StateSaver struct {
 	filePath string
 	interval time.Duration
 	stopChan chan struct{}
-	dirty    bool        // 标记是否有未保存的变更
-	stopOnce sync.Once   // 确保 Stop() 只执行一次，防止 close of closed channel
+	dirty    bool      // 标记是否有未保存的变更
+	stopOnce sync.Once // 确保 Stop() 只执行一次，防止 close of closed channel
 }
 
 // NewStateSaver 创建新的状态保存器

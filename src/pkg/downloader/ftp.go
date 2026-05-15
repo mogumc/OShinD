@@ -71,7 +71,7 @@ func (d *FTPDownloader) Download(ctx context.Context, task *types.DownloadTask, 
 
 	// 尝试从 .oshin 文件恢复下载状态（除非指定了 --no-resume）
 	resumedFromState := false
-	var existingState *OShinStateV2
+	var existingState *OShinState
 	if !task.Config.NoResume {
 		existingState, _ = LoadOShinState(oshinPath)
 	}
@@ -206,7 +206,7 @@ func (d *FTPDownloader) Download(ctx context.Context, task *types.DownloadTask, 
 }
 
 // validateFTResumeFile 校验 FTP 续传文件的有效性
-func (d *FTPDownloader) validateFTResumeFile(state *OShinStateV2, tempPath string) bool {
+func (d *FTPDownloader) validateFTResumeFile(state *OShinState, tempPath string) bool {
 	fi, err := os.Stat(tempPath)
 	if err != nil || fi == nil {
 		return false

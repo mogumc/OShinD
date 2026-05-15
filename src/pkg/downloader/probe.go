@@ -16,7 +16,6 @@ import (
 
 // applyHeaders 将自定义请求头应用到 HTTP 请求
 // 特殊处理 Host 头：Go 的 http.Request.Host 字段控制实际发送的 Host 头，
-// 通过 Header.Set("Host", ...) 设置会被忽略
 func applyHeaders(req *http.Request, headers map[string]string) {
 	for key, value := range headers {
 		if strings.EqualFold(key, "host") {
@@ -299,7 +298,7 @@ func ExtractFileInfo(rawURL string) string {
 // ParseContentDisposition 从 Content-Disposition 头中提取文件名
 // 支持两种格式：
 //   - filename="file.zip"  (RFC 6266)
-//   - filename*=UTF-8''file%20name.zip  (RFC 5987, 优先级更高)
+//   - filename*=UTF-8”file%20name.zip  (RFC 5987, 优先级更高)
 //
 // 优先级：filename* > filename（RFC 5987 规定）
 func ParseContentDisposition(header string) string {

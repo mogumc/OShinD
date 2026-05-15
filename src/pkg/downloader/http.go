@@ -81,7 +81,7 @@ func checkExistingFile(outputPath string, task *types.DownloadTask) (skip bool, 
 }
 
 // validateResumeFile 校验续传时临时文件的一致性
-func validateResumeFile(state *OShinStateV2, tempPath string, task *types.DownloadTask) bool {
+func validateResumeFile(state *OShinState, tempPath string, task *types.DownloadTask) bool {
 	fi, err := os.Stat(tempPath)
 	if err != nil || fi == nil {
 		return false
@@ -251,7 +251,7 @@ func (d *HTTPDownloader) Download(ctx context.Context, task *types.DownloadTask,
 
 	// 尝试从 .oshin 文件恢复下载状态（除非指定了 --no-resume）
 	resumedFromState := false
-	var existingState *OShinStateV2
+	var existingState *OShinState
 	if !task.Config.NoResume {
 		existingState, _ = LoadOShinState(oshinPath)
 	}
@@ -268,7 +268,7 @@ func (d *HTTPDownloader) Download(ctx context.Context, task *types.DownloadTask,
 	}
 	if existingState != nil && existingState.TotalSize == task.Metadata.Size {
 		chunkCount := int((existingState.TotalSize + existingState.ChunkSize - 1) / existingState.ChunkSize)
-		completedSet := make(map[int]*OShinChunkV2)
+		completedSet := make(map[int]*OShinChunk)
 		for i := range existingState.Chunks {
 			completedSet[existingState.Chunks[i].ID] = &existingState.Chunks[i]
 		}
@@ -403,40 +403,40 @@ func (d *HTTPDownloader) Download(ctx context.Context, task *types.DownloadTask,
 			task.Progress.IncActiveThreads()
 			defer task.Progress.DecActiveThreads()
 
-		for {
-			select {
-			case <-downloadCtx.Done():
-				return
-			default:
-			}
-
-			idxMu.Lock()
-			if nextChunkIdx >= len(task.Chunks) {
-				idxMu.Unlock()
-				return
-			}
-			chunk := task.Chunks[nextChunkIdx]
-			nextChunkIdx++
-			idxMu.Unlock()
-
-			if chunk.Status == types.ChunkStatusCompleted {
-				task.Progress.SetRemainingChunks(int32(len(task.Chunks)) - int32(nextChunkIdx))
-				continue
-			}
-
-			if err := d.downloadChunk(downloadCtx, task, chunk, tempFile); err != nil {
-				if !workerFailed.Load() && isPermanentFailure(err) {
-					workerFailed.Store(true)
-					fmt.Printf("\n  [!] Server connection limit detected, falling back to queue mode\n")
+			for {
+				select {
+				case <-downloadCtx.Done():
+					return
+				default:
 				}
-				task.Progress.IncFailedChunks()
+
+				idxMu.Lock()
+				if nextChunkIdx >= len(task.Chunks) {
+					idxMu.Unlock()
+					return
+				}
+				chunk := task.Chunks[nextChunkIdx]
+				nextChunkIdx++
+				idxMu.Unlock()
+
+				if chunk.Status == types.ChunkStatusCompleted {
+					task.Progress.SetRemainingChunks(int32(len(task.Chunks)) - int32(nextChunkIdx))
+					continue
+				}
+
+				if err := d.downloadChunk(downloadCtx, task, chunk, tempFile); err != nil {
+					if !workerFailed.Load() && isPermanentFailure(err) {
+						workerFailed.Store(true)
+						fmt.Printf("\n  [!] Server connection limit detected, falling back to queue mode\n")
+					}
+					task.Progress.IncFailedChunks()
+					stateSaver.MarkDirty()
+					continue
+				}
 				stateSaver.MarkDirty()
-				continue
+				stateSaver.Save()
+				task.Progress.SetRemainingChunks(int32(len(task.Chunks)) - int32(nextChunkIdx))
 			}
-			stateSaver.MarkDirty()
-			stateSaver.Save()
-			task.Progress.SetRemainingChunks(int32(len(task.Chunks)) - int32(nextChunkIdx))
-		}
 		}()
 	}
 
