@@ -5,25 +5,25 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/signal"
+	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mogumc/oshind/pkg/downloader"
 	"github.com/mogumc/oshind/types"
 )
 
-var version = "1.3.0"
+var version = "1.0.0"
+
+// ── 子命令路由 ──
 
 func main() {
-	// 解析命令行参数
 	if len(os.Args) < 2 {
 		printUsage()
-		os.Exit(1)
+		os.Exit(0)
 	}
 
-	// 获取命令
 	cmd := os.Args[1]
 
 	switch cmd {
@@ -31,263 +31,394 @@ func main() {
 		handleDownload(os.Args[2:])
 	case "probe":
 		handleProbe(os.Args[2:])
+	case "has-resume":
+		handleHasResume(os.Args[2:])
+	case "clear-resume":
+		handleClearResume(os.Args[2:])
 	case "version", "-v", "--version":
-		fmt.Printf("OShinD v%s\n", version)
+		printVersion()
 	case "help", "-h", "--help":
 		printUsage()
 	default:
-		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
-		printUsage()
+		printError(fmt.Sprintf("unknown command: %s", cmd))
+		fmt.Fprintln(os.Stderr, "Run 'oshind help' for usage.")
 		os.Exit(1)
 	}
 }
 
-// printUsage 打印使用说明
+// ── 使用说明 ──
 func printUsage() {
-	fmt.Println("Usage:")
-	fmt.Println("  oshind download <url> [options]   Download a file")
-	fmt.Println("  oshind probe <url> [options]      Probe server and show download info")
-	fmt.Println("  oshind version                    Show version")
-	fmt.Println("  oshind help                       Show this help")
-	fmt.Println()
-	fmt.Println("Options:")
-	fmt.Println("  -o, --output <path>        Output file or directory path")
-	fmt.Println("  -c, --connections <n>      Max connections (1-64, default: 4)")
-	fmt.Println("  -s, --chunk-size <size>    Chunk size in bytes or human-readable (e.g. 4m, 512k, default: 8m)")
-	fmt.Println("  -t, --timeout <dur>        Timeout duration (default: 30s)")
-	fmt.Println("  -r, --retry <n>            Retry count (default: 3)")
-	fmt.Println("  -u, --user <user>          FTP/SFTP username")
-	fmt.Println("  -p, --password <pass>      FTP/SFTP password")
-	fmt.Println("      --ftp-port <port>      FTP port (default: 21)")
-	fmt.Println("      --sftp-port <port>     SFTP port (default: 22)")
-	fmt.Println("      --skip-tls-verify      Skip TLS certificate verification")
-	fmt.Println("      --no-checksum          Disable automatic checksum verification")
-	fmt.Println("      --no-resume            Force fresh download, ignore .oshin state")
-	fmt.Println("  -m, --multi-source <url>   Additional source URL (can be repeated)")
-	fmt.Println("      --checksum-type <type> Checksum type (md5/sha256)")
-	fmt.Println("      --checksum-value <hex> Expected checksum value")
-	fmt.Println("      --checksum <type:value> Set checksum type and value (e.g. md5:abc123...)")
-	fmt.Println("  -H, --header <k:v>        Custom HTTP header (can be repeated)")
-}
-
-// handleDownload 处理下载命令
-func handleDownload(args []string) {
-	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "Error: URL is required")
-		os.Exit(1)
-	}
-
-	// 解析参数
-	rawURL := args[0]
-	config := parseArgs(args[1:])
-
-	// 创建引擎
-	engine := downloader.NewEngine(config)
-
-	// 创建可取消的上下文，监听 SIGINT/SIGTERM
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
-	// 显示协议信息
-	protocol, err := downloader.DetectProtocol(rawURL)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Printf("Protocol:    %s\n", protocol)
-	fmt.Printf("URL:         %s\n", rawURL)
-	fmt.Printf("Output:      %s\n", config.OutputDir)
-	fmt.Printf("Connections: %d\n", config.MaxConnections)
-	if len(config.MultiSources) > 0 {
-		fmt.Printf("Sources:     %d (multi-source enabled)\n", len(config.MultiSources)+1)
-	}
-	if len(config.Headers) > 0 {
-		fmt.Printf("Headers:     %d custom\n", len(config.Headers))
-	}
-	fmt.Println()
-
-	// 执行下载（engine.Download内部会启动ProgressReporter显示进度）
-	task, err := engine.Download(ctx, rawURL, config)
-
-	// 检查是否因信号中断退出
-	if err != nil && ctx.Err() != nil {
-		// 被 SIGINT/SIGTERM 中断
-		// 先停止进度报告器（停止 goroutine + 清除 ANSI 进度显示）
-		// 再打印中断状态，防止 ProgressReporter 继续覆盖输出
-		engine.StopReporter(task.ID)
-		fmt.Println()
-		printInterruptStatus(task)
-		os.Exit(130) // 标准 Ctrl+C 退出码
-	}
-
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "\nDownload failed: %v\n", err)
-		os.Exit(1)
-	}
-
-	// 显示最终结果
-	fmt.Printf("\n\n")
-	fmt.Println("========================================")
-	fmt.Println("  Download completed!")
-	fmt.Println("========================================")
-	fmt.Printf("  File:     %s\n", task.FileName)
-	fmt.Printf("  Path:     %s\n", task.OutputPath)
-	fmt.Printf("  Size:     %s\n", formatBytes(task.FileSize))
-	fmt.Printf("  Status:   %s\n", task.GetStatus())
-
-	// 显示校验结果
-	if task.Verify != nil {
-		if task.Verify.Skipped {
-			fmt.Printf("  Verify:   skipped (no checksum available)\n")
-		} else if task.Verify.Passed {
-			fmt.Printf("  Verify:   PASSED [%s]\n", task.Verify.Method)
-			fmt.Printf("    Expected: %s\n", task.Verify.Expected)
-			fmt.Printf("    Actual:   %s\n", task.Verify.Actual)
-		} else {
-			fmt.Printf("  Verify:   FAILED [%s]\n", task.Verify.Method)
-			fmt.Printf("    Expected: %s\n", task.Verify.Expected)
-			fmt.Printf("    Actual:   %s\n", task.Verify.Actual)
-		}
-	}
-	fmt.Println("========================================")
-}
-
-// printInterruptStatus 打印中断时的下载状态
-func printInterruptStatus(task *types.DownloadTask) {
-	fmt.Println("========================================")
-	fmt.Println("  Download Interrupted")
-	fmt.Println("========================================")
-
-	if task == nil {
-		fmt.Println("  No active task.")
+	if !isInteractive() {
+		printPlainUsage()
 		return
 	}
 
-	fmt.Printf("  URL:    %s\n", task.URL)
-	fmt.Printf("  File:   %s\n", task.FileName)
-	fmt.Printf("  Status: %s\n", task.GetStatus())
-
-	if task.Metadata.Size > 0 {
-		downloaded := task.Progress.GetDownloaded()
-		progress := float64(downloaded) / float64(task.Metadata.Size) * 100
-		fmt.Printf("  Size:   %s / %s (%.1f%%)\n",
-			formatBytes(downloaded),
-			formatBytes(task.Metadata.Size),
-			progress)
-	} else {
-		downloaded := task.Progress.GetDownloaded()
-		fmt.Printf("  Size:   %s (total unknown)\n", formatBytes(downloaded))
-	}
-
-	// 显示当前速度（使用全局速度计算）
-	speed := task.Progress.CalculateSpeed()
-	fmt.Printf("  Speed:  %s/s\n", formatBytes(int64(speed)))
-
-	// 显示线程和分块统计
-	fmt.Printf("  Active Threads: %d\n", task.Progress.GetActiveThreads())
-	fmt.Printf("  Remaining Chunks: %d\n", task.Progress.GetRemainingChunks())
-	fmt.Printf("  Failed Chunks: %d\n", task.Progress.GetFailedChunks())
-
-	// 显示 .oshin 状态文件路径
-	outputPath := task.Config.OutputDir + "/" + task.FileName
-	oshinPath := downloader.GetOShinStatePath(outputPath)
-	if _, err := os.Stat(oshinPath); err == nil {
-		fmt.Printf("  State File: %s (resume available)\n", oshinPath)
-	}
-
-	// 显示分片统计（使用线程安全快照）
-	snapshots := task.GetChunkSnapshots()
-	completed, downloading, pending, failed := 0, 0, 0, 0
-	for _, snap := range snapshots {
-		switch snap.Status {
-		case types.ChunkStatusCompleted:
-			completed++
-		case types.ChunkStatusDownloading:
-			downloading++
-		case types.ChunkStatusPending:
-			pending++
-		case types.ChunkStatusFailed:
-			failed++
-		}
-	}
-	fmt.Printf("  Chunks: %d total", len(snapshots))
-	if completed > 0 {
-		fmt.Printf("  [done: %d]", completed)
-	}
-	if downloading > 0 {
-		fmt.Printf("  [active: %d]", downloading)
-	}
-	if pending > 0 {
-		fmt.Printf("  [pending: %d]", pending)
-	}
-	if failed > 0 {
-		fmt.Printf("  [failed: %d]", failed)
-	}
+	fmt.Println(TitleStyle.Render("OShinD - v" + version))
 	fmt.Println()
-	fmt.Println("========================================")
+	fmt.Println(renderDivider("Commands"))
+	printCmd("  download, dl", "  <url> [options]", "Start a download")
+	printCmd("  probe", "        <url> [options]", "Probe server info")
+	printCmd("  has-resume", "   <dir> <file>", "Check resume state")
+	printCmd("  clear-resume", " <dir> <file>", "Clear resume state")
+	printCmd("  version", "", "Show version")
+	printCmd("  help", "", "Show this help")
+	fmt.Println()
+	fmt.Println(renderDivider("Options"))
+	printOpt("-o, --output <dir>", "Output directory (default: .)")
+	printOpt("-c, --connections <n>", "Max connections (default: 4)")
+	printOpt("-s, --chunk-size <size>", "Chunk size, e.g. 8m, 1m")
+	printOpt("-t, --timeout <duration>", "Request timeout (default: 30s)")
+	printOpt("-r, --retry <n>", "Retry count (default: 3)")
+	printOpt("-H, --header <key:value>", "Custom HTTP header")
+	printOpt("-m, --multi-source <url>", "Additional download source")
+	printOpt("-u, --user <username>", "FTP/SFTP username")
+	printOpt("-p, --password <password>", "FTP/SFTP password")
+	printOpt("--ftp-port <port>", "FTP port (default: 21)")
+	printOpt("--sftp-port <port>", "SFTP port (default: 22)")
+	printOpt("--skip-tls-verify", "Skip TLS verification")
+	printOpt("--no-checksum", "Skip checksum verification")
+	printOpt("--no-resume", "Disable resume support")
+	printOpt("--checksum-type <type>", "Checksum algorithm (md5/sha1/sha256)")
+	printOpt("--checksum-value <value>", "Expected checksum value")
+	printOpt("--checksum <type:value>", "Checksum as type:value")
 }
 
-// handleProbe 处理探测命令
-func handleProbe(args []string) {
+func printPlainUsage() {
+	fmt.Println("OShinD v" + version)
+	fmt.Println()
+	fmt.Println("Usage: oshind <command> [options]")
+	fmt.Println()
+	fmt.Println("Commands:")
+	fmt.Println("  download, dl   <url> [options]   Start a download")
+	fmt.Println("  probe          <url> [options]   Probe server info")
+	fmt.Println("  has-resume     <dir> <file>      Check resume state")
+	fmt.Println("  clear-resume   <dir> <file>      Clear resume state")
+	fmt.Println("  version                          Show version")
+	fmt.Println("  help                             Show this help")
+	fmt.Println()
+	fmt.Println("Options:")
+	fmt.Println("  -o, --output <dir>              Output directory (default: .)")
+	fmt.Println("  -c, --connections <n>           Max connections (default: 4)")
+	fmt.Println("  -s, --chunk-size <size>         Chunk size, e.g. 8m, 1m")
+	fmt.Println("  -t, --timeout <duration>        Request timeout (default: 30s)")
+	fmt.Println("  -r, --retry <n>                 Retry count (default: 3)")
+	fmt.Println("  -H, --header <key:value>        Custom HTTP header")
+	fmt.Println("  -m, --multi-source <url>        Additional download source")
+	fmt.Println("  -u, --user <username>           FTP/SFTP username")
+	fmt.Println("  -p, --password <password>       FTP/SFTP password")
+	fmt.Println("  --ftp-port <port>               FTP port (default: 21)")
+	fmt.Println("  --sftp-port <port>              SFTP port (default: 22)")
+	fmt.Println("  --skip-tls-verify               Skip TLS verification")
+	fmt.Println("  --no-checksum                   Skip checksum verification")
+	fmt.Println("  --no-resume                     Disable resume support")
+	fmt.Println("  --checksum-type <type>          Checksum algorithm (md5/sha1/sha256)")
+	fmt.Println("  --checksum-value <value>        Expected checksum value")
+	fmt.Println("  --checksum <type:value>         Checksum as type:value")
+}
+
+func printCmd(cmd, args, desc string) {
+	fmt.Println(HelpCmdStyle.Render(cmd) + HelpDescStyle.Render(args) + HelpDescStyle.Render("    "+desc))
+}
+
+func printOpt(opt, desc string) {
+	fmt.Println(InfoStyle.Render(opt) + "    " + HelpDescStyle.Render(desc))
+}
+
+func printVersion() {
+	if isInteractive() {
+		fmt.Println(TitleStyle.Render("OShinD") + SubtitleStyle.Render(" v"+version))
+	} else {
+		fmt.Printf("OShinD %s\n", version)
+	}
+}
+
+// ── download 命令 ──
+
+func handleDownload(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "Error: URL is required")
+		printError("url is required")
+		fmt.Fprintln(os.Stderr, "Usage: oshind download <url> [options]")
 		os.Exit(1)
 	}
 
-	// 解析参数
 	rawURL := args[0]
 	config := parseArgs(args[1:])
 
-	fmt.Printf("Probing:     %s\n", rawURL)
-	fmt.Println()
-
-	// 执行完整探测
-	result, err := downloader.ProbeFull(rawURL, config)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Probe failed: %v\n", err)
-		os.Exit(1)
-	}
-
-	// 显示探测结果
-	fmt.Println("=== Probe Results ===")
-	if result.ServerInfo != nil {
-		fmt.Printf("Host:        %s\n", result.ServerInfo.Host)
-		fmt.Printf("Port:        %s\n", result.ServerInfo.Port)
-		fmt.Printf("Scheme:      %s\n", result.ServerInfo.Scheme)
-	}
-	fmt.Println()
-
-	if result.Metadata != nil {
-		fmt.Println("=== File Info ===")
-		if result.Metadata.Size > 0 {
-			fmt.Printf("Size:        %s\n", formatBytes(result.Metadata.Size))
-		} else {
-			fmt.Println("Size:        Unknown")
-		}
-		fmt.Printf("Content-Type:%s\n", result.Metadata.ContentType)
-		fmt.Printf("Resume:      %v\n", result.Metadata.SupportResume)
-		if result.Metadata.ETag != "" {
-			fmt.Printf("ETag:        %s\n", result.Metadata.ETag)
-		}
-		if result.Metadata.Checksum != "" {
-			fmt.Printf("MD5:         %s\n", result.Metadata.Checksum)
-		}
-	}
-	fmt.Println()
-
-	if result.SpeedTestError != "" {
-		fmt.Printf("Speed test:  Failed (%s)\n", result.SpeedTestError)
+	if isInteractive() {
+		fmt.Println(InfoStyle.Render("↓ ") + fmt.Sprintf("Downloading: %s", rawURL))
 	} else {
-		fmt.Printf("Speed test:  %s/s\n", formatBytes(int64(result.EstimatedSpeed)))
+		fmt.Printf("Download: %s\n", rawURL)
 	}
 
-	if result.Error != "" {
-		fmt.Printf("Error:       %s\n", result.Error)
+	e := downloader.NewEngine(config)
+
+	// TTY: bubbletea 模式 | 非 TTY: 简单滚动输出
+	if isInteractive() {
+		runBubbleTeaDownload(e, rawURL, config)
+	} else {
+		runSimpleDownload(e, rawURL, config)
 	}
 }
 
-// parseArgs 解析命令行参数
+// runBubbleTeaDownload 交互终端
+func runBubbleTeaDownload(e *downloader.Engine, rawURL string, config *types.DownloadConfig) {
+	model, linesChan, statusChan, doneChan := newProgressModel()
+
+	// 在 goroutine 中执行下载，完成后通知 bubbletea 退出
+	go func() {
+		var reporter *ProgressReporter
+
+		onReady := func(task *types.DownloadTask) {
+			reporter = NewProgressReporter(task, statusChan)
+			reporter.OnReport = func(lines []string) {
+				cp := make([]string, len(lines))
+				copy(cp, lines)
+				select {
+				case linesChan <- cp:
+				default:
+				}
+			}
+			// bubbletea 管理 screen buffer
+			reporter.OnStop = func(_ int) {}
+			reporter.Start()
+		}
+
+		task, err := e.Download(context.Background(), rawURL, config, onReady)
+
+		// 停止 reporter
+		if reporter != nil {
+			reporter.Stop()
+		}
+
+		doneChan <- &doneMsg{task: task, err: err}
+	}()
+
+	// 运行 bubbletea
+	p := tea.NewProgram(model, tea.WithOutput(os.Stdout))
+	finalModel, runErr := p.Run()
+	if runErr != nil {
+		printError(fmt.Sprintf("tui error: %v", runErr))
+		os.Exit(1)
+	}
+
+	// 从最终 model 获取结果
+	m := finalModel.(progressModel)
+	if m.err != nil {
+		printError(fmt.Sprintf("download failed: %v", m.err))
+		os.Exit(1)
+	}
+	if m.result != nil {
+		printDownloadSummary(m.result)
+	}
+}
+
+// runSimpleDownload 非交互终端：直接滚动输出
+func runSimpleDownload(e *downloader.Engine, rawURL string, config *types.DownloadConfig) {
+	var reporter *ProgressReporter
+
+	onReady := func(task *types.DownloadTask) {
+		reporter = NewProgressReporter(task, nil)
+		reporter.OnReport = simpleOnReport
+		reporter.OnStop = func(_ int) {}
+		reporter.Start()
+	}
+
+	task, err := e.Download(context.Background(), rawURL, config, onReady)
+
+	if reporter != nil {
+		reporter.Stop()
+	}
+
+	if err != nil {
+		printError(fmt.Sprintf("download failed: %v", err))
+		os.Exit(1)
+	}
+	printDownloadSummary(task)
+}
+
+// ── probe 命令 ──
+
+func handleProbe(args []string) {
+	if len(args) < 1 {
+		printError("url is required")
+		fmt.Fprintln(os.Stderr, "Usage: oshind probe <url> [options]")
+		os.Exit(1)
+	}
+
+	rawURL := args[0]
+	config := parseArgs(args[1:])
+
+	if isInteractive() {
+		fmt.Println(InfoStyle.Render("⟳ ") + fmt.Sprintf("Probing: %s", rawURL))
+	} else {
+		fmt.Printf("Probing: %s\n", rawURL)
+	}
+
+	result, err := downloader.ProbeFull(rawURL, config)
+	if err != nil {
+		printError(fmt.Sprintf("probe failed: %v", err))
+		os.Exit(1)
+	}
+
+	fmt.Println()
+
+	if isInteractive() {
+		fmt.Println(renderDivider("Probe Result"))
+		fmt.Println()
+		fmt.Println(renderKV("URL", result.URL))
+
+		if result.Metadata != nil {
+			if result.Metadata.FileName != "" {
+				fmt.Println(renderKV("File", result.Metadata.FileName))
+			}
+			if result.Metadata.Size > 0 {
+				fmt.Println(renderKV("Size", formatBytes(result.Metadata.Size)))
+			}
+			if result.Metadata.ContentType != "" {
+				fmt.Println(renderKV("Type", result.Metadata.ContentType))
+			}
+			fmt.Println(renderKV("Resume", fmt.Sprintf("%v", result.Metadata.SupportResume)))
+			if result.Metadata.Checksum != "" {
+				if result.Metadata.ChecksumType != "" {
+					fmt.Println(renderKV("Checksum", fmt.Sprintf("%s:%s", result.Metadata.ChecksumType, result.Metadata.Checksum)))
+				} else {
+					fmt.Println(renderKV("Checksum", result.Metadata.Checksum))
+				}
+			}
+		}
+		if result.ServerInfo != nil {
+			fmt.Println(renderKV("Server", fmt.Sprintf("%s:%s (%s)", result.ServerInfo.Host, result.ServerInfo.Port, result.ServerInfo.Scheme)))
+		}
+		if result.EstimatedSpeed > 0 {
+			fmt.Println(renderKV("Speed", fmt.Sprintf("%s/s", formatBytes(int64(result.EstimatedSpeed)))))
+		}
+		fmt.Println()
+	} else {
+		fmt.Printf("URL:        %s\n", result.URL)
+		if result.Metadata != nil {
+			if result.Metadata.FileName != "" {
+				fmt.Printf("File:       %s\n", result.Metadata.FileName)
+			}
+			if result.Metadata.Size > 0 {
+				fmt.Printf("Size:       %s\n", formatBytes(result.Metadata.Size))
+			}
+			if result.Metadata.ContentType != "" {
+				fmt.Printf("Type:       %s\n", result.Metadata.ContentType)
+			}
+			fmt.Printf("Resume:     %v\n", result.Metadata.SupportResume)
+			if result.Metadata.Checksum != "" {
+				if result.Metadata.ChecksumType != "" {
+					fmt.Println(renderKV("Checksum", fmt.Sprintf("%s:%s", result.Metadata.ChecksumType, result.Metadata.Checksum)))
+				} else {
+					fmt.Println(renderKV("Checksum", result.Metadata.Checksum))
+				}
+			}
+		}
+		if result.ServerInfo != nil {
+			fmt.Printf("Server:     %s:%s (%s)\n", result.ServerInfo.Host, result.ServerInfo.Port, result.ServerInfo.Scheme)
+		}
+		if result.EstimatedSpeed > 0 {
+			fmt.Printf("Speed:      %s/s\n", formatBytes(int64(result.EstimatedSpeed)))
+		}
+	}
+}
+
+// ── has-resume 命令 ──
+
+func handleHasResume(args []string) {
+	if len(args) < 2 {
+		printError("output_dir and file_name are required")
+		fmt.Fprintln(os.Stderr, "Usage: oshind has-resume <dir> <file>")
+		os.Exit(1)
+	}
+
+	outputDir := args[0]
+	fileName := args[1]
+	outputPath := filepath.Join(outputDir, fileName)
+	oshinPath := downloader.GetOShinStatePath(outputPath)
+
+	state, _ := downloader.LoadOShinState(oshinPath)
+	if state == nil {
+		if isInteractive() {
+			fmt.Println(WarningStyle.Render("  ⚠ ") + "No resume state found")
+		} else {
+			fmt.Println("No resume state found")
+		}
+		return
+	}
+
+	if isInteractive() {
+		fmt.Println()
+		fmt.Println(renderDivider("Resume State"))
+		fmt.Println()
+		fmt.Println(renderKV("URL", state.URL))
+		fmt.Println(renderKV("File", state.FileName))
+		fmt.Println(renderKV("Size", formatBytes(state.TotalSize)))
+		fmt.Println(renderKV("ChunkSize", formatBytes(state.ChunkSize)))
+		fmt.Println(renderKV("Chunks", fmt.Sprintf("%d", len(state.Chunks))))
+
+		if len(state.Chunks) > 0 {
+			fmt.Println()
+			chunkHeader := fmt.Sprintf("  %-6s  %-20s  %-20s", "ID", "Start", "End")
+			fmt.Println(HeaderStyle.Render(chunkHeader))
+			limit := len(state.Chunks)
+			if limit > 12 {
+				limit = 12
+			}
+			for i := 0; i < limit; i++ {
+				c := state.Chunks[i]
+				fmt.Printf("  %-6d  %-20s  %-20s\n", c.ID, formatBytes(c.Start), formatBytes(c.End))
+			}
+			if len(state.Chunks) > 12 {
+				fmt.Println(InfoStyle.Render(fmt.Sprintf("    ... (%d more)", len(state.Chunks)-12)))
+			}
+		}
+		fmt.Println()
+	} else {
+		fmt.Printf("Resume state found:\n")
+		fmt.Printf("  URL:       %s\n", state.URL)
+		fmt.Printf("  File:      %s\n", state.FileName)
+		fmt.Printf("  Size:      %s\n", formatBytes(state.TotalSize))
+		fmt.Printf("  ChunkSize: %s\n", formatBytes(state.ChunkSize))
+		fmt.Printf("  Chunks:    %d\n", len(state.Chunks))
+		for i, c := range state.Chunks {
+			fmt.Printf("    [%d] %s - %s\n", c.ID, formatBytes(c.Start), formatBytes(c.End))
+			if i > 10 {
+				fmt.Printf("    ... (%d more)\n", len(state.Chunks)-11)
+				break
+			}
+		}
+	}
+}
+
+// ── clear-resume 命令 ──
+
+func handleClearResume(args []string) {
+	if len(args) < 2 {
+		printError("output_dir and file_name are required")
+		fmt.Fprintln(os.Stderr, "Usage: oshind clear-resume <dir> <file>")
+		os.Exit(1)
+	}
+
+	outputDir := args[0]
+	fileName := args[1]
+	outputPath := filepath.Join(outputDir, fileName)
+	oshinPath := downloader.GetOShinStatePath(outputPath)
+
+	if err := downloader.RemoveOShinState(oshinPath); err != nil {
+		printError(fmt.Sprintf("clear failed: %v", err))
+		os.Exit(1)
+	}
+
+	if isInteractive() {
+		fmt.Println(SuccessStyle.Render("  ✓ ") + "Resume state cleared")
+	} else {
+		fmt.Println("Resume state cleared")
+	}
+}
+
+// ── 参数解析 ──
+
 func parseArgs(args []string) *types.DownloadConfig {
 	config := types.DefaultConfig()
 
@@ -376,7 +507,6 @@ func parseArgs(args []string) *types.DownloadConfig {
 				i++
 			}
 		case "--checksum":
-			// 快捷参数：同时指定类型和值，格式为 "type:value" (例如 "md5:abc123...")
 			if i+1 < len(args) {
 				parts := strings.SplitN(args[i+1], ":", 2)
 				if len(parts) == 2 {
@@ -399,30 +529,9 @@ func parseArgs(args []string) *types.DownloadConfig {
 	return config
 }
 
-// formatBytes 格式化字节数为可读格式
-func formatBytes(bytes int64) string {
-	const (
-		KB = 1024
-		MB = 1024 * KB
-		GB = 1024 * MB
-	)
-
-	switch {
-	case bytes >= GB:
-		return fmt.Sprintf("%.2f GB", float64(bytes)/float64(GB))
-	case bytes >= MB:
-		return fmt.Sprintf("%.2f MB", float64(bytes)/float64(MB))
-	case bytes >= KB:
-		return fmt.Sprintf("%.2f KB", float64(bytes)/float64(KB))
-	default:
-		return fmt.Sprintf("%d B", bytes)
-	}
-}
-
-// parseSize 解析带单位的大小字符串（如 "4m", "512k", "1g"）
 func parseSize(s string) int64 {
 	if len(s) == 0 {
-		return 8 * 1024 * 1024 // 默认 8MB
+		return 8 * 1024 * 1024
 	}
 
 	last := s[len(s)-1]
