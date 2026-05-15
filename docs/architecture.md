@@ -14,7 +14,7 @@ OShinD/
 │   │   ├── ftp.go              # FTP 下载器
 │   │   ├── sftp.go             # SFTP 下载器
 │   │   ├── probe.go            # 服务器探测
-│   │   ├── state.go            # 状态持久化 (Protobuf V3 + JSON V2/V1)
+│   │   ├── state.go            # 状态持久化 (Protobuf V1)
 │   │   ├── verifier.go         # 文件校验
 │   │   └── proto/oshin_state.proto
 │   ├── types/types.go          # 核心数据结构
@@ -41,9 +41,10 @@ OShinD/
 
 ```go
 type Engine struct {
-    tasks          map[string]*DownloadTask      // 任务列表
-    cancelFuncs    map[string]context.CancelFunc  // 取消函数
-    reporters      map[string]*ProgressReporter   // 进度报告器
+    mu             sync.RWMutex
+    tasks          map[string]*types.DownloadTask      // 任务列表
+    cancelFuncs    map[string]context.CancelFunc       // 取消函数
+    reporters      map[string]*ProgressReporter        // 进度报告器
     httpDownloader *HTTPDownloader
     ftpDownloader  *FTPDownloader
     sftpDownloader *SFTPDownloader
@@ -55,8 +56,12 @@ type Engine struct {
 - `Download()` - 同步执行下载（CLI 使用）
 - `SubmitDownload()` - 异步提交下载（FFI 使用）
 - `CancelTask()` - 取消任务
-- `PauseTask()` - 暂停任务
+- `PauseTask()` - 暂停任务（状态设为 PAUSED）
+- `ResumeTask()` - 恢复暂停/失败的任务（创建新任务，状态设为 RESUMING）
 - `GetTask()` - 获取任务状态
+- `ListTasks()` - 列出所有任务
+- `RemoveTask()` - 移除任务
+- `StopReporter()` - 停止进度报告器
 
 ---
 
@@ -65,23 +70,27 @@ type Engine struct {
 HTTP/HTTPS 下载器，实现：
 - 多线程分片下载
 - 自适应超时
-- 慢启动
-- 工作窃取
+- 多来源下载（加权轮询）
 - 断点续传
 
 ```go
 type HTTPDownloader struct {
-    config        *DownloadConfig
-    transport     *http.Transport
-    fastFailClient *http.Client
-    mu            sync.Mutex  // 保护 maxConnTime/fastFailClient
+    client         *http.Client
+    transport      *http.Transport          // 主 transport
+    clients        map[string]*http.Client  // 多来源下载时的 client 映射
+    mu             sync.Mutex
+    maxConnTime    time.Duration            // 最长成功连接时间
+    fastFailClient *http.Client             // 快速失败客户端
+    weightedURLs   []string                 // 加权 URL 列表
+    urlIndex       int64                    // 当前轮询索引（原子操作）
+    tlsConfig      *tls.Config              // TLS 配置
 }
 ```
 
 **下载流程**:
 1. 探测服务器（Probe）
-2. 创建分片（Chunks）
-3. 启动 Worker Pool
+2. 加载/创建分片（支持从 .oshin 状态文件恢复）
+3. 启动 Worker Pool（goroutine + atomic 原子索引）
 4. 下载分片
 5. 校验文件
 6. 清理状态
@@ -91,54 +100,63 @@ type HTTPDownloader struct {
 ### 3. ProgressReporter (http.go)
 
 进度报告器，负责：
-- 实时计算下载速度
-- 格式化进度显示
-- 支持 ANSI 清行
+- 实时计算下载速度（基于已完成分片数）
+- 格式化进度显示（spinner 动画 + 进度条）
+- 支持 ANSI 清行（终端环境）
 
 ```go
 type ProgressReporter struct {
-    task           *DownloadTask
-    interval       time.Duration
-    done           chan struct{}
-    maxOutputLines int  // 历史最大输出行数
+    task            *types.DownloadTask
+    interval        time.Duration
+    stopChan        chan struct{}
+    lastOutputLines int
+    maxOutputLines  int       // 历史最大输出行数
+    started         bool      // 是否已输出过至少一次
+    stopOnce        sync.Once
+    frameCount      int       // 动画帧计数
+    OnReport        func(lines []string)  // 回调：输出进度行
+    OnStop          func(maxLines int)    // 回调：停止时清除进度区
 }
 ```
 
 **显示格式**:
 ```
-  [i] Downloading file.zip
-      Progress: 45.2% (540.0 MB / 1.2 GB)
-      Speed:    12.5 MB/s
-      Threads:  4/4 active
-      ETA:      1m 12s
+  ⠋ [=====================>               ] 65.3% | 31.61 MB/s | ETA: 12s
+  Threads: 4/4  |  Remaining: 8 chunks  |  Failed: 0
+  ── Active Threads ──
+  [T0] Chunk#3  [########........]  62.3%
+  [T1] Chunk#7  [######..........]  31.1%
 ```
+
+**进度计算**:
+- 总进度：`已完成分片数 / 总分片数 * 100%`
+- 速度：基于 `ProgressInfo` 的滚动窗口计算瞬时速度
 
 ---
 
 ### 4. State (state.go)
 
-状态持久化，支持：
-- Protobuf V3（二进制格式）
-- JSON V2（精简格式）
-- JSON V1（完整格式）
-- 自动兼容旧格式
+状态持久化，使用 Protobuf V1 二进制格式：
 
 **状态文件格式**:
 ```protobuf
 message OShinState {
-    int32 v = 1;
-    string url = 2;
-    string file_name = 3;
-    int64 total_size = 4;
-    int64 chunk_size = 5;
-    string et = 6;
-    repeated OShinChunk chunks = 7;
+  int32                version         = 1;  // 版本号
+  repeated string       urls            = 2;  // 下载源 URL 列表
+  string               file_name       = 3;  // 输出文件名
+  int64                total_size      = 4;  // 文件总大小（字节）
+  int64                chunk_size      = 5;  // 分片大小（字节）
+  string               et              = 6;  // 校验信息，格式 "type:value"
+  repeated Chunk       chunks          = 7;  // 已完成的分片列表
+  map<string, string>  headers         = 8;  // HTTP 自定义请求头
+  string               protocol        = 9;  // 下载协议
+  int32                connections     = 10; // 最大并发连接数
 }
 
-message OShinChunk {
-    int32 id = 1;
-    int64 start = 2;
-    int64 end = 3;
+message Chunk {
+  int32  id    = 1;  // 分片索引
+  int64  start = 2;  // 起始字节位置（含）
+  int64  end   = 3;  // 结束字节位置（含）
 }
 ```
 
@@ -149,28 +167,57 @@ message OShinChunk {
 核心数据结构：
 
 ```go
+// 任务状态
+type TaskStatus int
+const (
+    TaskStatusPending     TaskStatus = 0  // 待开始
+    TaskStatusProbing     TaskStatus = 1  // 探测中
+    TaskStatusDownloading TaskStatus = 2  // 下载中
+    TaskStatusVerifying   TaskStatus = 3  // 校验中
+    TaskStatusCompleted   TaskStatus = 4  // 已完成
+    TaskStatusFailed      TaskStatus = 5  // 失败
+    TaskStatusPaused      TaskStatus = 6  // 已暂停
+    TaskStatusResuming    TaskStatus = 7  // 恢复中
+)
+
 // 下载任务
 type DownloadTask struct {
-    ID         string
-    URL        string
-    FileName   string
-    Protocol   Protocol
-    Config     *DownloadConfig
-    Metadata   FileMetadata
-    Progress   *ProgressInfo
-    Chunks     []*ChunkInfo
-    Status     TaskStatus
-    // ...
+    mu          sync.RWMutex
+    ID          string
+    URL         string
+    Protocol    Protocol
+    FileName    string
+    OutputPath  string
+    FileSize    int64
+    Metadata    *FileMetadata
+    Config      *DownloadConfig
+    Chunks      []*ChunkInfo
+    Progress    *ProgressInfo
+    Status      TaskStatus
+    CreatedAt   time.Time
+    UpdatedAt   time.Time
+    MultiSource bool
+    Verify      *VerifyResult
 }
 
 // 下载配置
 type DownloadConfig struct {
-    MaxConnections int
-    ChunkSize      int64
-    Timeout        time.Duration
-    Retry          int
-    Headers        map[string]string
-    // ...
+    MaxConnections  int
+    ChunkSize       int64
+    Timeout         time.Duration
+    Retry           int
+    RetryDelay      time.Duration
+    Headers         map[string]string
+    OutputDir       string
+    TempDir         string
+    ChecksumType    string
+    ChecksumValue   string
+    AutoChecksum    bool
+    TLSConfig       *TLSConfig
+    FTPConfig       *FTPConfig
+    MultiSources    []string
+    AdaptiveTimeout bool
+    NoResume        bool
 }
 ```
 
@@ -188,6 +235,7 @@ type DownloadConfig struct {
 │                     Engine                                  │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │
 │  │   Submit    │  │   Cancel    │  │   Pause     │        │
+│  │   Resume    │  │   Remove    │  │   List      │        │
 │  └─────────────┘  └─────────────┘  └─────────────┘        │
 └──────────────────────┬──────────────────────────────────────┘
                        │
@@ -201,18 +249,20 @@ type DownloadConfig struct {
                        │
                        v
 ┌─────────────────────────────────────────────────────────────┐
-│               HTTPDownloader                                │
+│               HTTPDownloader / FTPDownloader / SFTPDownloader│
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │
 │  │  分片创建   │  │  Worker Pool │  │  下载分片   │        │
+│  │  (恢复)     │  │  (atomic)   │  │  (重试)     │        │
 │  └─────────────┘  └─────────────┘  └─────────────┘        │
 └──────────────────────┬──────────────────────────────────────┘
                        │
                        v
 ┌─────────────────────────────────────────────────────────────┐
 │              ProgressReporter                               │
-│  - 实时进度                                                  │
-│  - 速度计算                                                  │
-│  - ANSI 显示                                                 │
+│  - 实时进度（基于已完成分片数）                               │
+│  - 速度计算（滚动窗口）                                      │
+│  - spinner 动画                                              │
+│  - ANSI 清行（终端）                                         │
 └──────────────────────┬──────────────────────────────────────┘
                        │
                        v
@@ -225,7 +275,7 @@ type DownloadConfig struct {
                        v
 ┌─────────────────────────────────────────────────────────────┐
 │                    State                                     │
-│  - 保存进度到 .oshin 文件                                    │
+│  - 保存进度到 .oshin 文件（Protobuf V1）                     │
 │  - 支持断点续传                                              │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -237,24 +287,23 @@ type DownloadConfig struct {
 ### Worker Pool
 
 ```go
+// 使用 goroutine + atomic 原子索引实现
 // 有效并发数 = min(分片数, 最大连接数)
-effectiveConcurrency = min(chunkCount, MaxConnections)
+effectiveConcurrency := min(chunkCount, config.MaxConnections)
 
-// 每个 Worker 从共享 index 队列获取分片
-for chunkIdx := range indexQueue {
-    downloadChunk(chunkIdx)
-}
-```
+var nextIndex int64  // 原子索引
 
-### 工作窃取
-
-当一个 Worker 完成后，可以窃取其他慢 Worker 的分片：
-
-```go
-// 慢 Worker 检测
-if time.Since(chunk.StartTime) > slowThreshold {
-    // 释放分片到队列
-    indexQueue <- chunk.Index
+// 每个 Worker 从共享索引获取分片
+for i := 0; i < effectiveConcurrency; i++ {
+    go func() {
+        for {
+            idx := int(atomic.AddInt64(&nextIndex, 1) - 1)
+            if idx >= len(task.Chunks) {
+                return
+            }
+            downloadChunk(task.Chunks[idx])
+        }
+    }()
 }
 ```
 
@@ -262,13 +311,26 @@ if time.Since(chunk.StartTime) > slowThreshold {
 
 ## 断点续传机制
 
-1. **保存时机**: 每个分片完成后保存
-2. **保存内容**: 已完成的分片列表
+1. **保存时机**: 每个分片完成后保存到 .oshin 文件
+2. **保存内容**: 已完成的分片列表、URL、校验信息等
 3. **恢复流程**: 
    - 加载 .oshin 文件
+   - 校验临时文件一致性（checksum/文件大小）
    - 跳过已完成的分片
    - 继续下载剩余分片
 4. **状态清理**: 下载完成后删除 .oshin 文件
+
+**任务状态流转**:
+```
+PENDING → PROBING → DOWNLOADING → VERIFYING → COMPLETED
+                                 ↘ FAILED
+                → PAUSED (Ctrl+C) → RESUMING → DOWNLOADING → ...
+```
+
+**Ctrl+C 暂停处理**:
+- **TTY 模式**: bubbletea 捕获 `ctrl+c` 作为 KeyMsg 或 SIGINT → `tea.ErrInterrupted`，触发 `printInterruptSummary` 输出暂停摘要
+- **非 TTY 模式**: signal.Notify 监听 SIGINT，同样触发 `printInterruptSummary`
+- 暂停摘要包含：URL、文件名、大小、已下载进度、分片状态、校验和、协议、状态文件路径、续传提示
 
 ---
 
@@ -276,12 +338,20 @@ if time.Since(chunk.StartTime) > slowThreshold {
 
 ```go
 // 基于历史连接时间动态调整超时
-if connTime < avgTime * 0.5 {
-    // 快速连接，减少超时
-    timeout = minTimeout
-} else if connTime > avgTime * 2 {
-    // 慢连接，增加超时
-    timeout = maxTimeout
+func (d *HTTPDownloader) getAdaptiveClient(url string, isRetry bool) *http.Client {
+    if isRetry && d.fastFailClient != nil {
+        return d.fastFailClient  // 重试时使用快速失败客户端
+    }
+    return d.client
+}
+
+// 记录最长成功连接时间
+func (d *HTTPDownloader) updateMaxConnTime(duration time.Duration) {
+    d.mu.Lock()
+    defer d.mu.Unlock()
+    if duration > d.maxConnTime {
+        d.maxConnTime = duration
+    }
 }
 ```
 

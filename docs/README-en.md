@@ -9,6 +9,7 @@ Cross-platform multi-threaded downloader supporting HTTP/HTTPS/FTP/SFTP protocol
 - **Multi-protocol** — HTTP/HTTPS, FTP, SFTP
 - **Multi-threaded chunked download** — up to 64 concurrent connections
 - **Resume support** — auto-saves download state, resumes after interruption
+- **Ctrl+C pause** — press Ctrl+C to pause download with detailed summary, re-run to resume
 - **Custom headers** — supports custom HTTP headers for auth, anti-hotlinking, etc.
 - **Multi-source download** — download from multiple CDNs simultaneously
 - **File verification** — auto-detects and verifies MD5/SHA256
@@ -31,7 +32,7 @@ cd src && go build -o oshind ./cmd/cli/
 
 | Document | Description |
 |----------|-------------|
-| [CLI Guide](cli-guide.md) | Command-line arguments, usage examples, resume, verification |
+| [CLI Guide](cli-guide.md) | Command-line arguments, usage examples, Ctrl+C pause, resume, verification |
 | [FFI API](ffi-api.md) | C/Python/Swift interfaces, function signatures, integration examples |
 | [Build Guide](build-guide.md) | Requirements, build steps, cross-compilation, troubleshooting |
 | [Architecture](architecture.md) | Module overview, download flow, concurrency model, state persistence |

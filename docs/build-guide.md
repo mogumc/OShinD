@@ -119,14 +119,20 @@ go vet ./...
 
 ### FFI 测试
 
-使用 Python GUI 测试工具：
+使用 Python ctypes 测试 FFI 接口：
 
 ```bash
 # 先构建 DLL
 go build -buildmode=c-shared -o oshind.dll ./cmd/ffi/
 
-# 运行测试工具
-python test_ffi_gui.py
+# 使用 Python 测试（参考 docs/ffi-api.md 中的示例）
+python -c "
+import ctypes
+lib = ctypes.CDLL('./oshind.dll')
+lib.OShinD_Version.argtypes = []
+lib.OShinD_Version.restype = ctypes.c_char_p
+print('Version:', lib.OShinD_Version().decode())
+"
 ```
 
 ---
@@ -135,12 +141,12 @@ python test_ffi_gui.py
 
 ### 版本号
 
-版本通过 `ldflags` 在编译时注入，源码中的 `var version = "1.3.0"` 为默认值：
+版本通过 `ldflags` 在编译时注入，源码中的 `var version = "1.0.0"` 为默认值：
 
 ```bash
 # Makefile 自动从 git tag 获取版本号
 cd src && make build          # 版本从 git describe --tags 获取
-make tag VERSION=1.4.0        # 创建 git tag
+make tag VERSION=1.1.0        # 创建 git tag
 ```
 
 ### 发布流程
@@ -150,8 +156,8 @@ make tag VERSION=1.4.0        # 创建 git tag
 3. 推送 tag 触发 GitHub Actions 自动构建
 
 ```bash
-make tag VERSION=1.4.0
-git push origin v1.4.0
+make tag VERSION=1.1.0
+git push origin v1.1.0
 ```
 
 GitHub Actions 会自动构建多平台 CLI + FFI 产物并创建 Release。

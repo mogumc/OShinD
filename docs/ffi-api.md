@@ -33,7 +33,7 @@ char* OShinD_Version(void)
 
 返回版本号字符串。
 
-**返回值**: 版本号，如 `"1.3.0"`
+**返回值**: 版本号，如 `"1.0.0"`
 
 ---
 
@@ -42,73 +42,44 @@ char* OShinD_Version(void)
 #### `OShinD_Download`
 
 ```c
-char* OShinD_Download(char* url, char* outputDir, int connections)
+char* OShinD_Download(char* url, char* optionsJson)
 ```
 
-异步启动下载任务。
+异步启动下载任务。支持 HTTP/HTTPS/FTP/SFTP 协议，多连接分块下载，断点续传。
 
 **参数**:
 - `url` - 下载 URL
-- `outputDir` - 输出目录
-- `connections` - 并发连接数 (1-64)
+- `optionsJson` - JSON 格式的下载选项（可选，传 `NULL` 使用默认配置）
 
-**返回值**: 任务 ID（用于后续操作），失败返回空字符串
-
----
-
-#### `OShinD_DownloadWithResume`
-
-```c
-char* OShinD_DownloadWithResume(char* url, char* outputDir, int connections, int noResume)
+**optionsJson 字段**:
+```json
+{
+  "output_dir": "./downloads",        // 输出目录（默认 "."）
+  "connections": 4,                    // 最大并发连接数（默认 4，范围 1-64）
+  "chunk_size": 8388608,              // 分片大小（字节，默认 8MB）
+  "timeout": 30,                      // 请求超时（秒，默认 30）
+  "retry": 3,                         // 重试次数（默认 3）
+  "no_resume": false,                 // 禁用断点续传（默认 false）
+  "headers": {"User-Agent": "xxx"},   // 自定义请求头
+  "multi_sources": ["url1", "url2"],  // 多来源 URL
+  "checksum_type": "md5",             // 校验类型（md5/sha256）
+  "checksum_value": "abc123",         // 期望校验和
+  "auto_checksum": true,              // 是否自动校验
+  "skip_tls_verify": false            // 跳过 TLS 验证
+}
 ```
 
-下载任务（支持续传控制）。
+**返回值**: 任务 ID（字符串，用于后续操作），失败返回空字符串 `""`
 
-**参数**:
-- `url` - 下载 URL
-- `outputDir` - 输出目录
-- `connections` - 并发连接数
-- `noResume` - 是否强制全新下载 (0=使用续传, 1=强制全新)
-
-**返回值**: 任务 ID
-
----
-
-#### `OShinD_DownloadWithHeaders`
-
+**示例**:
 ```c
-char* OShinD_DownloadWithHeaders(char* url, char* outputDir, int connections, int noResume, char* headersJson)
+// 默认配置
+char* taskID = OShinD_Download("https://example.com/file.zip", NULL);
+
+// 自定义配置
+char* options = "{\"output_dir\":\"./downloads\",\"connections\":8,\"headers\":{\"Authorization\":\"Bearer token\"}}";
+char* taskID = OShinD_Download("https://example.com/file.zip", options);
 ```
-
-下载任务（支持自定义请求头）。
-
-**参数**:
-- `url` - 下载 URL
-- `outputDir` - 输出目录
-- `connections` - 并发连接数
-- `noResume` - 是否强制全新下载
-- `headersJson` - JSON 格式的请求头，如 `{"User-Agent":"Mozilla/5.0","Referer":"https://example.com"}`
-
-**返回值**: 任务 ID
-
----
-
-#### `OShinD_DownloadMultiSource`
-
-```c
-char* OShinD_DownloadMultiSource(char* url, char* outputDir, int connections, char** sources, int sourceCount)
-```
-
-多来源下载。
-
-**参数**:
-- `url` - 主 URL
-- `outputDir` - 输出目录
-- `connections` - 并发连接数
-- `sources` - 额外来源 URL 数组
-- `sourceCount` - 额外来源数量
-
-**返回值**: 任务 ID
 
 ---
 
@@ -140,9 +111,13 @@ char* OShinD_GetTaskStatus(char* taskID)
   "total": 1200000000,
   "chunks": [...],
   "protocol": "HTTPS",
+  "multi_source": false,
   "active_threads": 4,
   "remaining_chunks": 2,
   "failed_chunks": 0,
+  "max_connections": 4,
+  "chunk_size": 8388608,
+  "temp_size": 540000000,
   "created_at": "2026-05-13T12:00:00Z",
   "updated_at": "2026-05-13T12:01:30Z"
 }
@@ -152,6 +127,7 @@ char* OShinD_GetTaskStatus(char* taskID)
 - `PENDING` - 待开始
 - `PROBING` - 探测中
 - `DOWNLOADING` - 下载中
+- `RESUMING` - 恢复中
 - `VERIFYING` - 校验中
 - `COMPLETED` - 已完成
 - `FAILED` - 失败
@@ -195,12 +171,36 @@ char* OShinD_GetChunkStatus(char* taskID, int chunkIndex)
 char* OShinD_PauseTask(char* taskID)
 ```
 
-暂停下载任务。
+暂停下载任务。状态将被设置为 `PAUSED`，结束下载但是不删除内存中的状态缓存，可通过 `OShinD_ResumeTask` 恢复。
 
 **参数**:
 - `taskID` - 任务 ID
 
-**返回值**: 暂停后的任务状态 JSON
+**返回值**: 暂停后的任务状态 JSON（与 `OShinD_GetTaskStatus` 格式相同）
+
+---
+
+#### `OShinD_ResumeTask`
+
+```c
+char* OShinD_ResumeTask(char* taskID)
+```
+
+恢复暂停或失败的下载任务。系统会自动检测 `.oshin` 断点状态文件并恢复下载。
+
+**参数**:
+- `taskID` - 原任务 ID（必须处于 `PAUSED` 或 `FAILED` 状态）
+
+**返回值**: JSON 格式的响应
+```json
+// 成功
+{"id": "new-task-id"}
+
+// 失败
+{"error": "task xxx is not resumable (status: COMPLETED)"}
+```
+
+**注意**: 恢复后会创建新的任务（返回新的 `id`），旧任务会被移除。
 
 ---
 
@@ -210,7 +210,7 @@ char* OShinD_PauseTask(char* taskID)
 int OShinD_CancelTask(char* taskID)
 ```
 
-取消下载任务。
+移除任务但是不删除已下载资源。
 
 **参数**:
 - `taskID` - 任务 ID
@@ -225,7 +225,7 @@ int OShinD_CancelTask(char* taskID)
 int OShinD_RemoveTask(char* taskID)
 ```
 
-移除任务（清理资源）。
+移除任务并删除已下载资源。
 
 **参数**:
 - `taskID` - 任务 ID
@@ -254,11 +254,12 @@ char* OShinD_HasResumeState(char* outputDir, char* fileName)
 ```json
 {
   "exists": true,
-  "v": 3,
+  "v": 1,
   "url": "https://example.com/file.zip",
   "file_name": "file.zip",
   "total_size": 1200000000,
   "chunk_size": 8388608,
+  "et": "md5:abc123",
   "chunks": [
     {"id": 0, "start": 0, "end": 8388607},
     {"id": 1, "start": 8388608, "end": 16777215}
@@ -315,16 +316,17 @@ class OShinD:
         self.lib.OShinD_Version.argtypes = []
         self.lib.OShinD_Version.restype = ctypes.c_char_p
         
-        self.lib.OShinD_DownloadWithHeaders.argtypes = [
-            ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int, ctypes.c_int, ctypes.c_char_p
-        ]
-        self.lib.OShinD_DownloadWithHeaders.restype = ctypes.c_char_p
+        self.lib.OShinD_Download.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+        self.lib.OShinD_Download.restype = ctypes.c_char_p
         
         self.lib.OShinD_GetTaskStatus.argtypes = [ctypes.c_char_p]
         self.lib.OShinD_GetTaskStatus.restype = ctypes.c_char_p
         
         self.lib.OShinD_PauseTask.argtypes = [ctypes.c_char_p]
         self.lib.OShinD_PauseTask.restype = ctypes.c_char_p
+        
+        self.lib.OShinD_ResumeTask.argtypes = [ctypes.c_char_p]
+        self.lib.OShinD_ResumeTask.restype = ctypes.c_char_p
         
         self.lib.OShinD_CancelTask.argtypes = [ctypes.c_char_p]
         self.lib.OShinD_CancelTask.restype = ctypes.c_int
@@ -335,10 +337,19 @@ class OShinD:
     def version(self):
         return self.lib.OShinD_Version().decode()
     
-    def download(self, url, output_dir, connections=4, headers=None):
-        headers_json = json.dumps(headers) if headers else "{}"
-        task_id = self.lib.OShinD_DownloadWithHeaders(
-            url.encode(), output_dir.encode(), connections, 0, headers_json.encode()
+    def download(self, url, output_dir=None, connections=None, headers=None):
+        options = {}
+        if output_dir:
+            options["output_dir"] = output_dir
+        if connections:
+            options["connections"] = connections
+        if headers:
+            options["headers"] = headers
+        
+        options_json = json.dumps(options) if options else None
+        task_id = self.lib.OShinD_Download(
+            url.encode(),
+            options_json.encode() if options_json else None
         )
         return task_id.decode() if task_id else None
     
@@ -348,6 +359,10 @@ class OShinD:
     
     def pause(self, task_id):
         raw = self.lib.OShinD_PauseTask(task_id.encode())
+        return json.loads(raw.decode()) if raw else {}
+    
+    def resume(self, task_id):
+        raw = self.lib.OShinD_ResumeTask(task_id.encode())
         return json.loads(raw.decode()) if raw else {}
     
     def cancel(self, task_id):
@@ -361,13 +376,17 @@ class OShinD:
 oshind = OShinD("oshind.dll")
 print(f"版本: {oshind.version()}")
 
-# 带请求头下载
+# 基本下载
+task_id = oshind.download("https://example.com/file.zip")
+print(f"任务 ID: {task_id}")
+
+# 带配置下载
 task_id = oshind.download(
     "https://example.com/file.zip",
-    "./downloads",
-    headers={"User-Agent": "Mozilla/5.0", "Authorization": "Bearer token"}
+    output_dir="./downloads",
+    connections=8,
+    headers={"Authorization": "Bearer token"}
 )
-print(f"任务 ID: {task_id}")
 
 # 轮询状态
 import time
@@ -377,6 +396,13 @@ while True:
     if status["status"] in ("COMPLETED", "FAILED", "PAUSED"):
         break
     time.sleep(0.5)
+
+# 暂停并恢复
+oshind.pause(task_id)
+time.sleep(2)
+result = oshind.resume(task_id)
+if "id" in result:
+    task_id = result["id"]  # 使用新的任务 ID
 ```
 
 ---
@@ -396,22 +422,34 @@ class OShinD {
         handle = h
     }
     
-    func download(url: String, outputDir: String, headers: [String: String] = [:]) -> String? {
-        guard let sym = dlsym(handle, "OShinD_DownloadWithHeaders") else { return nil }
+    func download(url: String, options: [String: Any] = [:]) -> String? {
+        guard let sym = dlsym(handle, "OShinD_Download") else { return nil }
         
-        typealias DownloadFunc = @convention(c) (UnsafePointer<CChar>, UnsafePointer<CChar>, Int32, Int32, UnsafePointer<CChar>) -> UnsafePointer<CChar>?
+        typealias DownloadFunc = @convention(c) (UnsafePointer<CChar>, UnsafePointer<CChar>?) -> UnsafePointer<CChar>?
         let download = unsafeBitCast(sym, to: DownloadFunc.self)
         
-        let headersJson = try? JSONSerialization.data(withJSONObject: headers)
-        let headersStr = headersJson.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        let optionsJson = options.isEmpty ? nil : try? JSONSerialization.data(withJSONObject: options)
+        let optionsStr = optionsJson.flatMap { String(data: $0, encoding: .utf8) }
         
         return url.withCString { urlCStr in
-            outputDir.withCString { dirCStr in
-                headersStr.withCString { headersCStr in
-                    download(urlCStr, dirCStr, 4, 0, headersCStr)?.pointee
-                }
+            optionsStr.withCString { optCStr in
+                download(urlCStr, optCStr)?.pointee
             }
         }
+    }
+    
+    func getStatus(taskID: String) -> [String: Any]? {
+        guard let sym = dlsym(handle, "OShinD_GetTaskStatus") else { return nil }
+        
+        typealias GetStatusFunc = @convention(c) (UnsafePointer<CChar>) -> UnsafePointer<CChar>?
+        let getStatus = unsafeBitCast(sym, to: GetStatusFunc.self)
+        
+        guard let result = taskID.withCString({ getStatus($0)?.pointee }),
+              let data = String(cString: result).data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        
+        return json
     }
 }
 ```
@@ -427,7 +465,7 @@ class OShinD {
 建议在调用后检查返回值：
 
 ```python
-task_id = lib.OShinD_DownloadWithHeaders(...)
+task_id = lib.OShinD_Download(url.encode(), options.encode())
 if not task_id:
     print("下载启动失败")
 else:
