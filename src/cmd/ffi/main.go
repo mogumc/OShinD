@@ -6,6 +6,7 @@ import "C"
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -16,10 +17,26 @@ import (
 )
 
 var (
-	version    = "1.3.0"
+	version    = "1.0.0"
 	engine     *downloader.Engine
 	engineOnce sync.Once
 )
+
+// DownloadOptionsJSON 下载选项 JSON（所有字段可选）
+type DownloadOptionsJSON struct {
+	OutputDir     string            `json:"output_dir,omitempty"`      // 输出目录
+	Connections   int               `json:"connections,omitempty"`     // 最大并发连接数
+	ChunkSize     int64             `json:"chunk_size,omitempty"`      // 分片大小（字节）
+	Timeout       int               `json:"timeout,omitempty"`         // 请求超时（秒）
+	Retry         int               `json:"retry,omitempty"`           // 重试次数
+	NoResume      bool              `json:"no_resume,omitempty"`       // 禁用断点续传
+	Headers       map[string]string `json:"headers,omitempty"`         // 自定义请求头
+	MultiSources  []string          `json:"multi_sources,omitempty"`   // 多来源 URL
+	ChecksumType  string            `json:"checksum_type,omitempty"`   // 校验类型
+	ChecksumValue string            `json:"checksum_value,omitempty"`  // 期望校验和
+	AutoChecksum  *bool             `json:"auto_checksum,omitempty"`   // 是否自动校验（指针区分"未设置"和"设置为false"）
+	SkipTLSVerify bool              `json:"skip_tls_verify,omitempty"` // 跳过 TLS 验证
+}
 
 // ChunkStatusJSON 分片状态 JSON 结构
 type ChunkStatusJSON struct {
@@ -50,6 +67,9 @@ type TaskStatusJSON struct {
 	ActiveThreads   int32             `json:"active_threads"`   // 当前活跃线程数
 	RemainingChunks int32             `json:"remaining_chunks"` // 剩余分块数
 	FailedChunks    int32             `json:"failed_chunks"`    // 失败分块数
+	MaxConnections  int               `json:"max_connections"`  // 最大并发连接数
+	ChunkSize       int64             `json:"chunk_size"`       // 分片大小（字节）
+	TempSize        int64             `json:"temp_size"`        // temp 文件已写入大小（字节）
 	CreatedAt       string            `json:"created_at"`       // 创建时间
 	UpdatedAt       string            `json:"updated_at"`       // 更新时间
 }
@@ -60,6 +80,47 @@ func initEngine() *downloader.Engine {
 		engine = downloader.NewEngine(nil)
 	})
 	return engine
+}
+
+// applyDownloadOptions 将 JSON 选项应用到 DownloadConfig
+func applyDownloadOptions(config *types.DownloadConfig, opts *DownloadOptionsJSON) {
+	if opts == nil {
+		return
+	}
+	if opts.OutputDir != "" {
+		config.OutputDir = opts.OutputDir
+	}
+	if opts.Connections > 0 {
+		config.MaxConnections = opts.Connections
+	}
+	if opts.ChunkSize > 0 {
+		config.ChunkSize = opts.ChunkSize
+	}
+	if opts.Timeout > 0 {
+		config.Timeout = time.Duration(opts.Timeout) * time.Second
+	}
+	if opts.Retry >= 0 {
+		config.Retry = opts.Retry
+	}
+	config.NoResume = opts.NoResume
+	if opts.Headers != nil {
+		config.Headers = opts.Headers
+	}
+	if len(opts.MultiSources) > 0 {
+		config.MultiSources = opts.MultiSources
+	}
+	if opts.ChecksumType != "" {
+		config.ChecksumType = opts.ChecksumType
+	}
+	if opts.ChecksumValue != "" {
+		config.ChecksumValue = opts.ChecksumValue
+	}
+	if opts.AutoChecksum != nil {
+		config.AutoChecksum = *opts.AutoChecksum
+	}
+	if opts.SkipTLSVerify && config.TLSConfig != nil {
+		config.TLSConfig.InsecureSkipVerify = true
+	}
 }
 
 // buildTaskStatusJSON 构建任务状态 JSON（内部函数，避免重复代码）
@@ -103,9 +164,45 @@ func buildTaskStatusJSON(task *types.DownloadTask) TaskStatusJSON {
 		ActiveThreads:   task.Progress.GetActiveThreads(),
 		RemainingChunks: task.Progress.GetRemainingChunks(),
 		FailedChunks:    task.Progress.GetFailedChunks(),
+		MaxConnections:  getTaskMaxConnections(task),
+		ChunkSize:       getTaskChunkSize(task),
+		TempSize:        getTaskTempSize(task),
 		CreatedAt:       task.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:       task.UpdatedAt.Format(time.RFC3339),
 	}
+}
+
+// getTaskMaxConnections 获取任务最大并发连接数
+func getTaskMaxConnections(task *types.DownloadTask) int {
+	if task.Config != nil {
+		return task.Config.MaxConnections
+	}
+	return 0
+}
+
+// getTaskChunkSize 获取任务分片大小
+func getTaskChunkSize(task *types.DownloadTask) int64 {
+	if task.Config != nil {
+		return task.Config.ChunkSize
+	}
+	return 0
+}
+
+// getTaskTempSize 获取 temp 文件已写入大小（字节）
+func getTaskTempSize(task *types.DownloadTask) int64 {
+	outputPath := task.OutputPath
+	if outputPath == "" && task.Config != nil {
+		outputPath = filepath.Join(task.Config.OutputDir, task.FileName)
+	}
+	if outputPath == "" {
+		return 0
+	}
+	tempPath := downloader.GetTempPath(outputPath)
+	fi, err := os.Stat(tempPath)
+	if err != nil {
+		return 0
+	}
+	return fi.Size()
 }
 
 //export OShinD_Version
@@ -113,108 +210,42 @@ func OShinD_Version() *C.char {
 	return C.CString(version)
 }
 
-//export OShinD_Download
-func OShinD_Download(url *C.char, outputDir *C.char, connections C.int) *C.char {
-	goURL := C.GoString(url)
-	goOutputDir := C.GoString(outputDir)
-
-	config := types.DefaultConfig()
-	if goOutputDir != "" {
-		config.OutputDir = goOutputDir
-	}
-	if connections > 0 {
-		config.MaxConnections = int(connections)
-	}
-
-	e := initEngine()
-	taskID, err := e.SubmitDownload(goURL, config)
-	if err != nil {
-		return C.CString("")
-	}
-	return C.CString(taskID)
-}
-
-//export OShinD_DownloadWithResume
-func OShinD_DownloadWithResume(url *C.char, outputDir *C.char, connections C.int, noResume C.int) *C.char {
-	goURL := C.GoString(url)
-	goOutputDir := C.GoString(outputDir)
-
-	config := types.DefaultConfig()
-	if goOutputDir != "" {
-		config.OutputDir = goOutputDir
-	}
-	if connections > 0 {
-		config.MaxConnections = int(connections)
-	}
-	config.NoResume = noResume != 0
-
-	e := initEngine()
-	taskID, err := e.SubmitDownload(goURL, config)
-	if err != nil {
-		return C.CString("")
-	}
-	return C.CString(taskID)
-}
-
-//export OShinD_DownloadMultiSource
-func OShinD_DownloadMultiSource(url *C.char, outputDir *C.char, connections C.int, sources **C.char, sourceCount C.int) *C.char {
-	goURL := C.GoString(url)
-	goOutputDir := C.GoString(outputDir)
-
-	config := types.DefaultConfig()
-	if goOutputDir != "" {
-		config.OutputDir = goOutputDir
-	}
-	if connections > 0 {
-		config.MaxConnections = int(connections)
-	}
-
-	// 解析多来源 URL
-	if sourceCount > 0 && sources != nil {
-		cSlice := (*[1 << 30]*C.char)(unsafe.Pointer(sources))[:sourceCount:sourceCount]
-		for _, cStr := range cSlice {
-			config.MultiSources = append(config.MultiSources, C.GoString(cStr))
-		}
-	}
-
-	e := initEngine()
-	taskID, err := e.SubmitDownload(goURL, config)
-	if err != nil {
-		return C.CString("")
-	}
-	return C.CString(taskID)
-}
-
-// OShinD_DownloadWithHeaders 带自定义请求头的下载
-// headersJson: JSON 格式的请求头，如 {"User-Agent":"xxx","Referer":"xxx"}
+// OShinD_Download 统一下载入口
+// url: 下载地址
+// optionsJson: JSON 格式的下载选项（可选），字段包括：
+//   - output_dir: 输出目录
+//   - connections: 最大并发连接数
+//   - chunk_size: 分片大小（字节）
+//   - timeout: 请求超时（秒）
+//   - retry: 重试次数
+//   - no_resume: 禁用断点续传
+//   - headers: 自定义请求头 {"key":"value"}
+//   - multi_sources: 多来源 URL ["url1","url2"]
+//   - checksum_type: 校验类型 (md5/sha256)
+//   - checksum_value: 期望校验和
+//   - auto_checksum: 是否自动校验
+//   - skip_tls_verify: 跳过 TLS 验证
 //
-//export OShinD_DownloadWithHeaders
-func OShinD_DownloadWithHeaders(url *C.char, outputDir *C.char, connections C.int, noResume C.int, headersJson *C.char) *C.char {
+// 返回 task_id，失败返回空字符串
+//
+//export OShinD_Download
+func OShinD_Download(url *C.char, optionsJson *C.char) *C.char {
 	goURL := C.GoString(url)
-	goOutputDir := C.GoString(outputDir)
 
 	config := types.DefaultConfig()
-	if goOutputDir != "" {
-		config.OutputDir = goOutputDir
-	}
-	if connections > 0 {
-		config.MaxConnections = int(connections)
-	}
-	config.NoResume = noResume != 0
 
-	// 解析自定义请求头
-	if headersJson != nil {
-		goHeadersJson := C.GoString(headersJson)
-		if goHeadersJson != "" {
-			headers := make(map[string]string)
-			if err := json.Unmarshal([]byte(goHeadersJson), &headers); err == nil {
-				config.Headers = headers
+	if optionsJson != nil {
+		optsStr := C.GoString(optionsJson)
+		if optsStr != "" {
+			var opts DownloadOptionsJSON
+			if err := json.Unmarshal([]byte(optsStr), &opts); err == nil {
+				applyDownloadOptions(config, &opts)
 			}
 		}
 	}
 
 	e := initEngine()
-	taskID, err := e.SubmitDownload(goURL, config)
+	taskID, err := e.SubmitDownload(goURL, config, nil, nil)
 	if err != nil {
 		return C.CString("")
 	}
@@ -277,7 +308,7 @@ func OShinD_CancelTask(taskID *C.char) C.int {
 
 	e := initEngine()
 
-	// 先停止 reporter
+	// 先停止 reporter，避免 cancel 后仍有进度输出
 	e.StopReporter(goTaskID)
 
 	if err := e.CancelTask(goTaskID); err != nil {
@@ -295,14 +326,12 @@ func OShinD_PauseTask(taskID *C.char) *C.char {
 
 	e := initEngine()
 
-	// 调用 PauseTask：设置状态为 PAUSED + 取消下载
 	if err := e.PauseTask(goTaskID); err != nil {
 		result := TaskStatusJSON{ID: goTaskID, Status: "not_found"}
 		data, _ := json.Marshal(result)
 		return C.CString(string(data))
 	}
 
-	// 读取暂停后的任务状态
 	task, ok := e.GetTask(goTaskID)
 	if !ok {
 		result := TaskStatusJSON{ID: goTaskID, Status: "not_found"}
@@ -312,6 +341,26 @@ func OShinD_PauseTask(taskID *C.char) *C.char {
 
 	status := buildTaskStatusJSON(task)
 	data, _ := json.Marshal(status)
+	return C.CString(string(data))
+}
+
+// OShinD_ResumeTask 恢复暂停/失败的下载任务
+// 返回新的 task_id JSON，格式：{"id":"xxx"} 或错误：{"error":"xxx"}
+//
+//export OShinD_ResumeTask
+func OShinD_ResumeTask(taskID *C.char) *C.char {
+	goTaskID := C.GoString(taskID)
+
+	e := initEngine()
+	newID, err := e.ResumeTask(goTaskID, nil, nil)
+	if err != nil {
+		result := map[string]string{"error": err.Error()}
+		data, _ := json.Marshal(result)
+		return C.CString(string(data))
+	}
+
+	result := map[string]string{"id": newID}
+	data, _ := json.Marshal(result)
 	return C.CString(string(data))
 }
 
