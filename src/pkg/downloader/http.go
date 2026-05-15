@@ -63,34 +63,12 @@ func validateResumeFile(state *OShinState, tempPath string, task *types.Download
 		return false
 	}
 
-	if state.ET != "" {
-		parts := strings.SplitN(state.ET, ":", 2)
-		if len(parts) == 2 {
-			checksumType, checksumValue := parts[0], parts[1]
-			verifier := NewVerifier()
-			actual, calcErr := verifier.CalculateChecksum(tempPath, checksumType)
-			if calcErr == nil && strings.EqualFold(actual, checksumValue) {
-				return true
-			}
-			// checksum 不匹配
-			return false
-		}
+	// temp 文件大小必须与记录的总大小一致（Truncate 预分配）
+	if fi.Size() != state.TotalSize {
+		return false
 	}
 
-	if task.Metadata.Checksum != "" && task.Metadata.ChecksumType == "md5" && state.ChunkSize > 0 {
-		partialMD5, calcErr := CalculatePartialMD5(tempPath, state.ChunkSize)
-		if calcErr == nil && strings.EqualFold(partialMD5, task.Metadata.Checksum) {
-			return true
-		}
-		// partial MD5 不匹配
-	}
-
-	if fi.Size() == state.TotalSize {
-		return true
-	}
-
-	// 所有校验都失败
-	return false
+	return true
 }
 
 // findAvailablePath 查找可用的重命名路径
