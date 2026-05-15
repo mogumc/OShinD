@@ -238,6 +238,76 @@ func runSimpleDownload(e *downloader.Engine, rawURL string, config *types.Downlo
 
 // ── probe 命令 ──
 
+// probeModel bubbletea model，用于 probe 命令的 TUI 状态显示
+type probeModel struct {
+	status     types.TaskStatus
+	result     *downloader.ProbeResult
+	statusChan chan types.TaskStatus
+	doneChan   chan probeDoneMsg
+	err        error
+	quitting   bool
+}
+
+type probeDoneMsg struct {
+	result *downloader.ProbeResult
+	err    error
+}
+
+func (m probeModel) Init() tea.Cmd {
+	return waitForProbeUpdate(m.statusChan, m.doneChan)
+}
+
+func (m probeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case statusMsg:
+		m.status = msg.status
+		return m, waitForProbeUpdate(m.statusChan, m.doneChan)
+	case probeDoneMsg:
+		m.result = msg.result
+		m.err = msg.err
+		m.quitting = true
+		return m, tea.Quit
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c":
+			m.quitting = true
+			return m, tea.Quit
+		}
+	}
+	return m, nil
+}
+
+func (m probeModel) View() string {
+	if m.quitting {
+		return ""
+	}
+	if m.status == 0 {
+		return ""
+	}
+
+	switch m.status {
+	case types.TaskStatusProbing:
+		return "\n  🔍 " + statusProbing + "\n"
+	case types.TaskStatusCompleted:
+		return "\n  ✅ " + statusCompleted + "\n"
+	case types.TaskStatusFailed:
+		return "\n  ❌ " + statusFailed + "\n"
+	}
+	return ""
+}
+
+// waitForProbeUpdate probe 专用的 channel 等待，优先消费 status
+func waitForProbeUpdate(statusChan chan types.TaskStatus, doneChan chan probeDoneMsg) tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case status := <-statusChan:
+			return statusMsg{status: status}
+		case msg := <-doneChan:
+			return probeDoneMsg{result: msg.result, err: msg.err}
+		}
+	}
+}
+
 func handleProbe(args []string) {
 	if len(args) < 1 {
 		printError(errURLRequired)
@@ -254,10 +324,65 @@ func handleProbe(args []string) {
 		fmt.Printf("%s: %s\n", sumProbe, rawURL)
 	}
 
+	// TTY: bubbletea 模式 | 非 TTY: 简单阻塞
+	if isInteractive() {
+		runBubbleTeaProbe(rawURL, config)
+	} else {
+		runSimpleProbe(rawURL, config)
+	}
+}
+
+// runBubbleTeaProbe 交互终端 probe
+func runBubbleTeaProbe(rawURL string, config *types.DownloadConfig) {
+	statusChan := make(chan types.TaskStatus, 8)
+	doneChan := make(chan probeDoneMsg, 1)
+
+	model := probeModel{
+		statusChan: statusChan,
+		doneChan:   doneChan,
+	}
+
+	go func() {
+		// 发送 Probing 状态
+		select {
+		case statusChan <- types.TaskStatusProbing:
+		default:
+		}
+
+		result, err := downloader.ProbeFull(rawURL, config)
+
+		doneChan <- probeDoneMsg{result: result, err: err}
+	}()
+
+	p := tea.NewProgram(model, tea.WithOutput(os.Stdout))
+	finalModel, runErr := p.Run()
+	if runErr != nil {
+		printError(fmt.Sprintf("%s: %v", errTUIError, runErr))
+		os.Exit(1)
+	}
+
+	m := finalModel.(probeModel)
+	if m.err != nil {
+		printError(fmt.Sprintf("%s: %v", errProbeFailed, m.err))
+		os.Exit(1)
+	}
+	printProbeResult(m.result)
+}
+
+// runSimpleProbe 非交互终端 probe
+func runSimpleProbe(rawURL string, config *types.DownloadConfig) {
 	result, err := downloader.ProbeFull(rawURL, config)
 	if err != nil {
 		printError(fmt.Sprintf("%s: %v", errProbeFailed, err))
 		os.Exit(1)
+	}
+	printProbeResult(result)
+}
+
+// printProbeResult 输出探测结果
+func printProbeResult(result *downloader.ProbeResult) {
+	if result == nil {
+		return
 	}
 
 	fmt.Println()
@@ -353,13 +478,16 @@ func handleHasResume(args []string) {
 		fmt.Println()
 		fmt.Println(renderKV(probeURL, state.URL))
 		fmt.Println(renderKV(probeFile, state.FileName))
+		if len(state.ET) > 0 {
+			fmt.Println(renderKV(sumChecksum, state.ET))
+		}
 		fmt.Println(renderKV(probeSize, formatBytes(state.TotalSize)))
 		fmt.Println(renderKV(sumChunkSize, formatBytes(state.ChunkSize)))
 		fmt.Println(renderKV(sumChunks, fmt.Sprintf("%d", len(state.Chunks))))
 
 		if len(state.Chunks) > 0 {
 			fmt.Println()
-			chunkHeader := fmt.Sprintf("  %-6s  %-20s  %-20s", "ID", "Start", "End")
+			chunkHeader := fmt.Sprintf("  %-6s  %-20s  %-20s", resumeID, resumeStart, resumeEnd)
 			fmt.Println(HeaderStyle.Render(chunkHeader))
 			limit := len(state.Chunks)
 			if limit > 12 {
@@ -370,7 +498,7 @@ func handleHasResume(args []string) {
 				fmt.Printf("  %-6d  %-20s  %-20s\n", c.ID, formatBytes(c.Start), formatBytes(c.End))
 			}
 			if len(state.Chunks) > 12 {
-				fmt.Println(InfoStyle.Render(fmt.Sprintf("    ... (%d more)", len(state.Chunks)-12)))
+				fmt.Println(InfoStyle.Render(fmt.Sprintf("    "+resumeMore, len(state.Chunks)-12)))
 			}
 		}
 		fmt.Println()
@@ -384,7 +512,7 @@ func handleHasResume(args []string) {
 		for i, c := range state.Chunks {
 			fmt.Printf("    [%d] %s - %s\n", c.ID, formatBytes(c.Start), formatBytes(c.End))
 			if i > 10 {
-				fmt.Printf("    ... (%d more)\n", len(state.Chunks)-11)
+				fmt.Printf("    "+resumeMore+"\n", len(state.Chunks)-11)
 				break
 			}
 		}

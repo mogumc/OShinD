@@ -115,7 +115,7 @@ func (m progressModel) View() string {
 		case types.TaskStatusResuming:
 			statusLine = "  🔄 " + statusResuming
 		default:
-			statusLine = fmt.Sprintf("  Status: %s", m.status.String())
+			statusLine = fmt.Sprintf("  %s: %s", T("状态", "Status"), m.status.String())
 		}
 	}
 
@@ -131,15 +131,24 @@ func (m progressModel) View() string {
 }
 
 // waitForUpdate 返回一个 tea.Cmd，阻塞直到 linesChan、statusChan 或 doneChan 有数据
+// 优先非阻塞检查 statusChan，避免空 lines 消息抢占导致状态显示延迟
 func waitForUpdate(linesChan chan []string, statusChan chan types.TaskStatus, doneChan chan *doneMsg) tea.Cmd {
 	return func() tea.Msg {
+		// 优先级：status > done > lines
+		// 非阻塞检查 status，确保状态变化不被 linesChan 的空消息延迟
 		select {
-		case lines := <-linesChan:
-			return linesMsg{lines: lines}
+		case status := <-statusChan:
+			return statusMsg{status: status}
+		default:
+		}
+		// 阻塞等待任意 channel
+		select {
 		case status := <-statusChan:
 			return statusMsg{status: status}
 		case msg := <-doneChan:
 			return doneMsg{task: msg.task, err: msg.err}
+		case lines := <-linesChan:
+			return linesMsg{lines: lines}
 		}
 	}
 }
@@ -166,7 +175,7 @@ func simpleOnReport(lines []string) {
 
 // ── 格式化工具 ──
 
-// formatBytes 格式化字节大小（复用 downloader 中的格式逻辑）
+// formatBytes 格式化字节大小
 func formatBytes(bytes int64) string {
 	const (
 		KB = 1024
@@ -187,7 +196,7 @@ func formatBytes(bytes int64) string {
 
 // ── 完成信息渲染 ──
 
-// printSuccess 输出成功信息（TTY 用 lipgloss，非 TTY 用 plain text）
+// printSuccess 输出成功信息
 func printSuccess(fileName string, size int64) {
 	if isInteractive() {
 		msg := fmt.Sprintf("%s: %s", sumSaved, fileName)
@@ -360,8 +369,32 @@ func NewProgressReporter(task *types.DownloadTask, statusChan chan types.TaskSta
 
 // Start 开始报告进度（立即输出一次，然后定时刷新）
 func (r *ProgressReporter) Start() {
-	r.report()
+	// 快速状态监听：每 10ms 轮询一次 task.GetStatus()，确保快速状态变化（如 Probing）
+	// 不会被 500ms 的进度刷新间隔错过
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				currentStatus := r.task.GetStatus()
+				if currentStatus != r.lastStatus {
+					r.lastStatus = currentStatus
+					if r.statusChan != nil {
+						select {
+						case r.statusChan <- currentStatus:
+						default:
+						}
+					}
+				}
+			case <-r.stopChan:
+				return
+			}
+		}
+	}()
 
+	// 慢速进度刷新：每 500ms 生成进度行（进度条、线程、速度等）
+	r.report()
 	go func() {
 		ticker := time.NewTicker(r.interval)
 		defer ticker.Stop()
@@ -388,19 +421,8 @@ func (r *ProgressReporter) Stop() {
 }
 
 // report 生成当前进度帧并通过 OnReport 回调输出
+// 状态变化检测已移至 Start() 中的快速监听 goroutine（10ms 轮询）
 func (r *ProgressReporter) report() {
-	// 检测状态变化
-	currentStatus := r.task.GetStatus()
-	if currentStatus != r.lastStatus {
-		r.lastStatus = currentStatus
-		if r.statusChan != nil {
-			select {
-			case r.statusChan <- currentStatus:
-			default:
-			}
-		}
-	}
-
 	totalChunks := len(r.task.Chunks)
 	if totalChunks == 0 {
 		return

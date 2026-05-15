@@ -192,13 +192,13 @@ func initTranslations() {
 
 	// Status
 	statusPending = T("等待中...", "Pending...")
-	statusProbing = T("正在探测服务器...", "Probing server...")
-	statusDownloading = T("正在下载...", "Downloading...")
-	statusVerifying = T("正在验证校验和...", "Verifying checksum...")
+	statusProbing = T("探测中...", "Probing server...")
+	statusDownloading = T("下载中...", "Downloading...")
+	statusVerifying = T("校验中...", "Verifying checksum...")
 	statusCompleted = T("已完成", "Completed")
 	statusFailed = T("失败", "Failed")
 	statusPaused = T("已暂停", "Paused")
-	statusResuming = T("正在续传...", "Resuming...")
+	statusResuming = T("恢复下载...", "Resuming...")
 
 	// Progress
 	progressConnecting = T("连接中...", "connecting...")
@@ -207,7 +207,7 @@ func initTranslations() {
 	progressRemaining = T("剩余", "Remaining")
 	progressFailed = T("失败", "Failed")
 	progressChunks = T("分片", "chunks")
-	progressActive = T("活跃线程", "Active Threads")
+	progressActive = T("下载线程", "Active Threads")
 
 	// Verification
 	verifySkipped = T("跳过", "Skipped")
@@ -245,7 +245,7 @@ func initTranslations() {
 	sumNoResume = T("无续传状态", "No resume state found")
 	sumResumeFound = T("找到续传状态：", "Resume state found:")
 	sumCleared = T("续传状态已清除", "Resume state cleared")
-	sumProbe = T("探测中", "Probing")
+	sumProbe = T("正在探测", "Probing")
 	sumDownload = T("正在下载", "Downloading")
 
 	// Resume table
