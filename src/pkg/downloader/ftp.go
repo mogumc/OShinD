@@ -15,7 +15,6 @@ import (
 	"github.com/mogumc/oshind/types"
 )
 
-// FTPDownloader 通过 FTP 协议下载文件
 type FTPDownloader struct {
 }
 
@@ -25,8 +24,7 @@ func NewFTPDownloader() *FTPDownloader {
 }
 
 // Download 建立 FTP 连接并下载文件（支持断点续传）
-// reporter 参数用于在所有预下载消息（连接、登录等）输出完毕后才启动进度显示
-func (d *FTPDownloader) Download(ctx context.Context, task *types.DownloadTask, reporter *ProgressReporter) error {
+func (d *FTPDownloader) Download(ctx context.Context, task *types.DownloadTask, onReady func()) error {
 	host, port, path, err := d.parseFTPAddress(task.URL)
 	if err != nil {
 		return fmt.Errorf("invalid FTP address: %w", err)
@@ -105,8 +103,8 @@ func (d *FTPDownloader) Download(ctx context.Context, task *types.DownloadTask, 
 	task.SetStatus(types.TaskStatusDownloading)
 
 	// 在所有预下载消息输出完毕后再启动进度显示
-	if reporter != nil {
-		reporter.Start()
+	if onReady != nil {
+		onReady()
 	}
 
 	// 打开或创建临时文件

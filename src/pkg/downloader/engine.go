@@ -5,17 +5,14 @@ import (
 	"fmt"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"github.com/mogumc/oshind/types"
 )
 
-// Engine 下载引擎
 type Engine struct {
 	mu             sync.RWMutex
 	tasks          map[string]*types.DownloadTask
 	cancelFuncs    map[string]context.CancelFunc
-	reporters      map[string]*ProgressReporter
 	httpDownloader *HTTPDownloader
 	ftpDownloader  *FTPDownloader
 	sftpDownloader *SFTPDownloader
@@ -31,7 +28,6 @@ func NewEngine(config *types.DownloadConfig) *Engine {
 	return &Engine{
 		tasks:          make(map[string]*types.DownloadTask),
 		cancelFuncs:    make(map[string]context.CancelFunc),
-		reporters:      make(map[string]*ProgressReporter),
 		httpDownloader: NewHTTPDownloader(config),
 		ftpDownloader:  NewFTPDownloader(),
 		sftpDownloader: NewSFTPDownloader(),
@@ -40,7 +36,7 @@ func NewEngine(config *types.DownloadConfig) *Engine {
 }
 
 // Download 创建并执行下载任务
-func (e *Engine) Download(ctx context.Context, rawURL string, config *types.DownloadConfig, onReport func(lines []string), onStop func(maxLines int)) (*types.DownloadTask, error) {
+func (e *Engine) Download(ctx context.Context, rawURL string, config *types.DownloadConfig, onReady func(*types.DownloadTask)) (*types.DownloadTask, error) {
 	if config == nil {
 		config = types.DefaultConfig()
 	}
@@ -61,14 +57,6 @@ func (e *Engine) Download(ctx context.Context, rawURL string, config *types.Down
 	e.mu.Lock()
 	e.tasks[task.ID] = task
 	e.cancelFuncs[task.ID] = taskCancel
-	e.mu.Unlock()
-
-	// 不在此处启动 reporter，由各协议 Download() 在预下载消息输出完毕后启动
-	reporter := NewProgressReporter(task, 500*time.Millisecond)
-	reporter.OnReport = onReport
-	reporter.OnStop = onStop
-	e.mu.Lock()
-	e.reporters[task.ID] = reporter
 	e.mu.Unlock()
 
 	// 根据协议执行下载
@@ -98,7 +86,6 @@ func (e *Engine) Download(ctx context.Context, rawURL string, config *types.Down
 			task.OutputPath = checkedPath
 			task.FileSize = task.Metadata.Size
 			task.SetStatus(types.TaskStatusCompleted)
-			e.cleanupReporter(task.ID)
 			e.cleanupCancelFunc(task.ID)
 			return task, nil
 		}
@@ -106,23 +93,20 @@ func (e *Engine) Download(ctx context.Context, rawURL string, config *types.Down
 			task.FileName = filepath.Base(checkedPath)
 		}
 
-		if err := e.httpDownloader.Download(taskCtx, task, reporter); err != nil {
-			e.cleanupReporter(task.ID)
+		if err := e.httpDownloader.Download(taskCtx, task, wrapOnReady(onReady, task)); err != nil {
 			task.SetStatus(types.TaskStatusFailed)
 			e.cleanupCancelFunc(task.ID)
 			return task, fmt.Errorf("HTTP download failed: %w", err)
 		}
 	case types.ProtocolFTP:
-		if err := e.ftpDownloader.Download(taskCtx, task, reporter); err != nil {
-			e.cleanupReporter(task.ID)
+		if err := e.ftpDownloader.Download(taskCtx, task, wrapOnReady(onReady, task)); err != nil {
 			task.SetStatus(types.TaskStatusFailed)
 			e.cleanupCancelFunc(task.ID)
 			return task, fmt.Errorf("FTP download failed: %w", err)
 		}
 
 	case types.ProtocolSFTP:
-		if err := e.sftpDownloader.Download(taskCtx, task, reporter); err != nil {
-			e.cleanupReporter(task.ID)
+		if err := e.sftpDownloader.Download(taskCtx, task, wrapOnReady(onReady, task)); err != nil {
 			task.SetStatus(types.TaskStatusFailed)
 			e.cleanupCancelFunc(task.ID)
 			return task, fmt.Errorf("SFTP download failed: %w", err)
@@ -132,7 +116,6 @@ func (e *Engine) Download(ctx context.Context, rawURL string, config *types.Down
 		return nil, fmt.Errorf("unsupported protocol: %v", protocol)
 	}
 
-	e.cleanupReporter(task.ID)
 	task.SetStatus(types.TaskStatusVerifying)
 	outputPath := e.getOutputPath(task)
 	verifyResult := VerifyTask(task, outputPath)
@@ -153,9 +136,7 @@ func (e *Engine) Download(ctx context.Context, rawURL string, config *types.Down
 }
 
 // SubmitDownload 异步提交下载任务
-// onReport: 外部进度输出回调（传 nil 表示不输出进度）
-// onStop: 外部进度停止回调（ANSI 清行，传 nil 表示不处理）
-func (e *Engine) SubmitDownload(rawURL string, config *types.DownloadConfig, onReport func(lines []string), onStop func(maxLines int)) (string, error) {
+func (e *Engine) SubmitDownload(rawURL string, config *types.DownloadConfig, onReady func(*types.DownloadTask)) (string, error) {
 	if config == nil {
 		config = types.DefaultConfig()
 	}
@@ -175,11 +156,6 @@ func (e *Engine) SubmitDownload(rawURL string, config *types.DownloadConfig, onR
 	e.mu.Lock()
 	e.tasks[task.ID] = task
 	e.cancelFuncs[task.ID] = taskCancel
-
-	reporter := NewProgressReporter(task, 500*time.Millisecond)
-	reporter.OnReport = onReport
-	reporter.OnStop = onStop
-	e.reporters[task.ID] = reporter
 	e.mu.Unlock()
 
 	go func() {
@@ -212,7 +188,6 @@ func (e *Engine) SubmitDownload(rawURL string, config *types.DownloadConfig, onR
 					task.OutputPath = checkedPath
 					task.FileSize = task.Metadata.Size
 					task.SetStatus(types.TaskStatusCompleted)
-					e.cleanupReporter(task.ID)
 					e.cleanupCancelFunc(task.ID)
 					return
 				}
@@ -221,8 +196,7 @@ func (e *Engine) SubmitDownload(rawURL string, config *types.DownloadConfig, onR
 				}
 			}
 
-			if dlErr := e.httpDownloader.Download(taskCtx, task, reporter); dlErr != nil {
-				e.cleanupReporter(task.ID)
+			if dlErr := e.httpDownloader.Download(taskCtx, task, wrapOnReady(onReady, task)); dlErr != nil {
 				if task.GetStatus() != types.TaskStatusPaused {
 					task.SetStatus(types.TaskStatusFailed)
 				}
@@ -231,8 +205,7 @@ func (e *Engine) SubmitDownload(rawURL string, config *types.DownloadConfig, onR
 			}
 
 		case types.ProtocolFTP:
-			if dlErr := e.ftpDownloader.Download(taskCtx, task, reporter); dlErr != nil {
-				e.cleanupReporter(task.ID)
+			if dlErr := e.ftpDownloader.Download(taskCtx, task, wrapOnReady(onReady, task)); dlErr != nil {
 				if task.GetStatus() != types.TaskStatusPaused {
 					task.SetStatus(types.TaskStatusFailed)
 				}
@@ -241,8 +214,7 @@ func (e *Engine) SubmitDownload(rawURL string, config *types.DownloadConfig, onR
 			}
 
 		case types.ProtocolSFTP:
-			if dlErr := e.sftpDownloader.Download(taskCtx, task, reporter); dlErr != nil {
-				e.cleanupReporter(task.ID)
+			if dlErr := e.sftpDownloader.Download(taskCtx, task, wrapOnReady(onReady, task)); dlErr != nil {
 				if task.GetStatus() != types.TaskStatusPaused {
 					task.SetStatus(types.TaskStatusFailed)
 				}
@@ -251,7 +223,6 @@ func (e *Engine) SubmitDownload(rawURL string, config *types.DownloadConfig, onR
 			}
 		}
 
-		e.cleanupReporter(task.ID)
 		task.SetStatus(types.TaskStatusVerifying)
 		outputPath := e.getOutputPath(task)
 		verifyResult := VerifyTask(task, outputPath)
@@ -302,12 +273,6 @@ func (e *Engine) RemoveTask(id string) bool {
 			cancel()
 			delete(e.cancelFuncs, id)
 		}
-		if reporter, ok := e.reporters[id]; ok {
-			if reporter != nil {
-				reporter.Stop()
-			}
-			delete(e.reporters, id)
-		}
 		delete(e.tasks, id)
 		return true
 	}
@@ -315,7 +280,7 @@ func (e *Engine) RemoveTask(id string) bool {
 }
 
 // PauseTask 暂停任务
-// 取消下载并将状态设置为 PAUSED（而非 FAILED）
+// 取消下载并将状态设置为 PAUSED
 func (e *Engine) PauseTask(id string) error {
 	e.mu.RLock()
 	cancel, ok := e.cancelFuncs[id]
@@ -329,15 +294,13 @@ func (e *Engine) PauseTask(id string) error {
 	// 先设置 PAUSED 再取消，http.go 检测到 ctx.Done() 时看到的是 PAUSED 而非 FAILED
 	task.SetStatus(types.TaskStatusPaused)
 
-	e.StopReporter(id)
-
 	cancel()
 
 	return nil
 }
 
-// ResumeTask 恢复暂停/失败的任务，移除旧任务后重新提交下载（自动检测 .oshin 断点状态）
-func (e *Engine) ResumeTask(id string, onReport func(lines []string), onStop func(maxLines int)) (string, error) {
+// ResumeTask 恢复暂停/失败的任务，移除旧任务后重新提交下载
+func (e *Engine) ResumeTask(id string, onReady func(*types.DownloadTask)) (string, error) {
 	e.mu.RLock()
 	task, ok := e.tasks[id]
 	e.mu.RUnlock()
@@ -361,7 +324,7 @@ func (e *Engine) ResumeTask(id string, onReport func(lines []string), onStop fun
 	// 移除旧任务后重新提交，.oshin 状态文件会被自动检测并恢复
 	e.RemoveTask(id)
 
-	newID, err := e.SubmitDownload(rawURL, config, onReport, onStop)
+	newID, err := e.SubmitDownload(rawURL, config, onReady)
 	if err != nil {
 		return "", fmt.Errorf("resume failed: %w", err)
 	}
@@ -369,7 +332,7 @@ func (e *Engine) ResumeTask(id string, onReport func(lines []string), onStop fun
 	return newID, nil
 }
 
-// CancelTask 取消任务（触发 context 取消，下载 goroutine 通过 ctx.Done() 退出）
+// CancelTask 取消任务
 func (e *Engine) CancelTask(id string) error {
 	e.mu.RLock()
 	cancel, ok := e.cancelFuncs[id]
@@ -388,26 +351,13 @@ func (e *Engine) cleanupCancelFunc(id string) {
 	delete(e.cancelFuncs, id)
 }
 
-// StopReporter 停止指定任务的进度报告器
-func (e *Engine) StopReporter(taskID string) {
-	e.mu.RLock()
-	reporter, ok := e.reporters[taskID]
-	e.mu.RUnlock()
-	if ok && reporter != nil {
-		reporter.Stop()
+// wrapOnReady 将 onReady(task) 回调适配为 onReady() 回调供 downloader 使用
+// 通知外部下载状态已就绪
+func wrapOnReady(onReady func(*types.DownloadTask), task *types.DownloadTask) func() {
+	if onReady == nil {
+		return nil
 	}
-}
-
-// cleanupReporter 停止并移除进度报告器
-func (e *Engine) cleanupReporter(id string) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if reporter, ok := e.reporters[id]; ok {
-		if reporter != nil {
-			reporter.Stop()
-		}
-		delete(e.reporters, id)
-	}
+	return func() { onReady(task) }
 }
 
 // getOutputPath 获取输出文件路径

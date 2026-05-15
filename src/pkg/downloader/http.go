@@ -77,8 +77,6 @@ func validateResumeFile(state *OShinState, tempPath string, task *types.Download
 		return false
 	}
 
-	// 校验逻辑（优先级递减）：
-	// 1. state 有 checksum → 计算临时文件 checksum 比较
 	if state.ET != "" {
 		parts := strings.SplitN(state.ET, ":", 2)
 		if len(parts) == 2 {
@@ -93,17 +91,14 @@ func validateResumeFile(state *OShinState, tempPath string, task *types.Download
 		}
 	}
 
-	// 2. 无 checksum 但有 ETag MD5 → 计算临时文件前 chunk_size 字节的 MD5
 	if task.Metadata.ETag != "" && isMD5Hex(task.Metadata.ETag) && state.ChunkSize > 0 {
 		partialMD5, calcErr := CalculatePartialMD5(tempPath, state.ChunkSize)
 		if calcErr == nil && strings.EqualFold(partialMD5, task.Metadata.ETag) {
 			return true
 		}
-		// partial MD5 不匹配（可能是下载过程中断导致前段数据不一致）
-		// 这种情况下不作为硬性失败，继续下一步
+		// partial MD5 不匹配
 	}
 
-	// 3. 只比较文件大小
 	if fi.Size() == state.TotalSize {
 		return true
 	}
@@ -113,7 +108,6 @@ func validateResumeFile(state *OShinState, tempPath string, task *types.Download
 }
 
 // findAvailablePath 查找可用的重命名路径
-// file.zip → file.zip.1 → file.zip.2 ...
 func findAvailablePath(outputPath string) string {
 	for i := 1; ; i++ {
 		candidate := fmt.Sprintf("%s.%d", outputPath, i)
@@ -211,7 +205,6 @@ func buildWeightedURLs(primary string, others []string) []string {
 	if len(others) == 0 {
 		return []string{primary}
 	}
-	// 主 URL 出现 2 次，其他各 1 次
 	urls := make([]string, 0, 2+len(others))
 	urls = append(urls, primary, primary)
 	urls = append(urls, others...)
@@ -228,8 +221,7 @@ func (d *HTTPDownloader) nextURL() string {
 }
 
 // Download 执行 HTTP/HTTPS 下载
-// reporter 参数用于在所有预下载消息（resume提示等）输出完毕后才启动进度显示
-func (d *HTTPDownloader) Download(ctx context.Context, task *types.DownloadTask, reporter *ProgressReporter) error {
+func (d *HTTPDownloader) Download(ctx context.Context, task *types.DownloadTask, onReady func()) error {
 	outputPath := d.getOutputPath(task)
 	oshinPath := GetOShinStatePath(outputPath)
 	tempPath := GetTempPath(outputPath)
@@ -312,10 +304,9 @@ func (d *HTTPDownloader) Download(ctx context.Context, task *types.DownloadTask,
 	// resume 阶段结束，进入下载
 	task.SetStatus(types.TaskStatusDownloading)
 
-	// 在所有预下载消息（resume/init 提示）输出完毕后再启动进度显示
-	// 避免 reporter 的 ANSI 清行与这些消息交错导致显示混乱
-	if reporter != nil {
-		reporter.Start()
+	// 在所有预下载消息（resume/init 提示）输出完毕后通知外部开始显示进度
+	if onReady != nil {
+		onReady()
 	}
 
 	// 计算实际并发数：min(分片数, 最大连接数)
@@ -435,10 +426,6 @@ func (d *HTTPDownloader) Download(ctx context.Context, task *types.DownloadTask,
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		// 先停止进度报告器，清除 ANSI 进度显示区，避免后续消息与进度输出交错
-		if reporter != nil {
-			reporter.Stop()
-		}
 		// 强制退出：关闭所有空闲连接，打断阻塞在 body.Read() 上的 worker
 		d.transport.CloseIdleConnections()
 		<-done
@@ -674,197 +661,6 @@ func (d *HTTPDownloader) getOutputPath(task *types.DownloadTask) string {
 	return filepath.Join(task.Config.OutputDir, fileName)
 }
 
-// ProgressReporter 进度报告器
-// 通过回调函数将进度数据传递给外部，不在 downloader 内部直接输出
-type ProgressReporter struct {
-	task            *types.DownloadTask
-	interval        time.Duration
-	stopChan        chan struct{}
-	lastOutputLines int       // 上次输出的行数（用于清除）
-	maxOutputLines  int       // 历史最大输出行数（用于可靠清除）
-	started         bool      // 是否已输出过至少一次
-	stopOnce        sync.Once // 确保 Stop() 只执行一次
-	frameCount      int       // 动画帧计数（用于 spinner）
-	OnReport        func(lines []string) // 回调：输出进度行
-	OnStop          func(maxLines int)   // 回调：停止时清除进度区
-}
-
-// NewProgressReporter 创建新的进度报告器
-func NewProgressReporter(task *types.DownloadTask, interval time.Duration) *ProgressReporter {
-	return &ProgressReporter{
-		task:     task,
-		interval: interval,
-		stopChan: make(chan struct{}),
-	}
-}
-
-// Start 开始报告进度（立即输出一次初始进度，然后定时刷新）
-func (r *ProgressReporter) Start() {
-	r.report()
-
-	go func() {
-		ticker := time.NewTicker(r.interval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				r.report()
-			case <-r.stopChan:
-				return
-			}
-		}
-	}()
-}
-
-// Stop 停止报告进度（清除进度显示区，不留残影）
-func (r *ProgressReporter) Stop() {
-	r.stopOnce.Do(func() {
-		close(r.stopChan)
-		if r.maxOutputLines > 0 && r.started && r.OnStop != nil {
-			r.OnStop(r.maxOutputLines)
-		}
-	})
-}
-
-// report 报告当前进度
-// 每帧输出格式：
-//
-//	⠋ [=====================>               ] 65.3% | 31.61 MB/s | ETA: 12s
-//	Threads: 4/4  |  Remaining: 8 chunks  |  Failed: 0
-//	── Active Threads ──
-//	[T0] Chunk#3  [########........]  62.3%
-//	[T1] Chunk#7  [######..........]  31.1%
-func (r *ProgressReporter) report() {
-	totalChunks := len(r.task.Chunks)
-	if totalChunks == 0 {
-		return
-	}
-
-	completedChunks := r.task.GetCompletedChunkCount()
-	downloaded := r.task.Progress.GetDownloaded()
-	total := r.task.Metadata.Size
-
-	// 计算全局瞬时速度（基于 ProgressInfo 的滚动窗口）
-	speed := r.task.Progress.CalculateSpeed()
-
-	var eta time.Duration
-	if speed > 0 && total > 0 && downloaded < total {
-		remaining := float64(total-downloaded) / speed
-		eta = time.Duration(remaining * float64(time.Second))
-	}
-
-	// spinner 动画
-	spinner := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
-	r.frameCount++
-	spinChar := spinner[r.frameCount%len(spinner)]
-
-	var lines []string
-
-	// 第1行：spinner + 进度条（基于已完成分片数） + 速度 + ETA
-	progress := float64(completedChunks) / float64(totalChunks) * 100
-	bar := r.buildProgressBar(progress, 40)
-	if speed > 0 {
-		lines = append(lines, fmt.Sprintf("  %c %s %5.1f%% | %s/s | ETA: %s",
-			spinChar, bar, progress, formatBytes(int64(speed)), formatDuration(eta)))
-	} else if downloaded > 0 {
-		lines = append(lines, fmt.Sprintf("  %c %s %5.1f%% | %s downloaded",
-			spinChar, bar, progress, formatBytes(downloaded)))
-	} else {
-		lines = append(lines, fmt.Sprintf("  %c %s %5.1f%% | connecting...",
-			spinChar, bar, progress))
-	}
-
-	// 第2行：线程统计
-	activeThreads := r.task.Progress.GetActiveThreads()
-	remainingChunks := r.task.Progress.GetRemainingChunks()
-	failedChunks := r.task.Progress.GetFailedChunks()
-	lines = append(lines, fmt.Sprintf("  Threads: %d/%d  |  Remaining: %d chunks  |  Failed: %d",
-		activeThreads, r.task.Config.MaxConnections, remainingChunks, failedChunks))
-
-	// 第3行起：活跃线程详情
-	activeChunks := r.task.GetActiveChunks()
-
-	if len(activeChunks) > 0 {
-		lines = append(lines, "  ── Active Threads ──")
-		for i, chunk := range activeChunks {
-			chunkSize := chunk.End - chunk.Start + 1
-			chunkProgress := 0.0
-			if chunkSize > 0 {
-				chunkProgress = float64(chunk.Downloaded) / float64(chunkSize) * 100
-			}
-			miniBar := buildMiniBar(chunkProgress, 20)
-			lines = append(lines, fmt.Sprintf("  [T%d] Chunk#%-3d %s %5.1f%%",
-				i, chunk.Index, miniBar, chunkProgress))
-		}
-	}
-
-	r.lastOutputLines = len(lines)
-	if len(lines) > r.maxOutputLines {
-		r.maxOutputLines = len(lines)
-	}
-	r.started = true
-
-	// 通过回调输出（清旧行 + 新行）
-	if r.OnReport != nil {
-		if r.maxOutputLines > 0 && r.started {
-			if r.OnStop != nil {
-				r.OnStop(r.maxOutputLines)
-			}
-		}
-		r.OnReport(lines)
-	}
-}
-
-// buildProgressBar 构建主进度条
-func (r *ProgressReporter) buildProgressBar(progress float64, width int) string {
-	if progress < 0 {
-		progress = 0
-	}
-	if progress > 100 {
-		progress = 100
-	}
-
-	filled := int(progress / 100.0 * float64(width))
-	if filled > width {
-		filled = width
-	}
-
-	var bar strings.Builder
-	bar.WriteByte('[')
-	for i := 0; i < width; i++ {
-		if i < filled {
-			bar.WriteByte('=')
-		} else if i == filled && filled < width {
-			bar.WriteByte('>')
-		} else {
-			bar.WriteByte(' ')
-		}
-	}
-	bar.WriteByte(']')
-	return bar.String()
-}
-
-// buildMiniBar 构建小型分片进度条
-func buildMiniBar(progress float64, width int) string {
-	filled := int(progress / 100.0 * float64(width))
-	if filled > width {
-		filled = width
-	}
-
-	var bar strings.Builder
-	bar.WriteByte('[')
-	for i := 0; i < width; i++ {
-		if i < filled {
-			bar.WriteByte('#')
-		} else {
-			bar.WriteByte('.')
-		}
-	}
-	bar.WriteByte(']')
-	return bar.String()
-}
-
 // buildFastFailClient 构建快速失败客户端
 // 调用方须持有 d.mu 锁
 func (d *HTTPDownloader) buildFastFailClient() *http.Client {
@@ -914,26 +710,6 @@ func (d *HTTPDownloader) getAdaptiveClient(downloadURL string, isRetry bool) *ht
 		client = c
 	}
 	return client
-}
-
-// formatBytes 格式化字节数为可读格式
-func formatBytes(bytes int64) string {
-	const (
-		KB = 1024
-		MB = 1024 * KB
-		GB = 1024 * MB
-	)
-
-	switch {
-	case bytes >= GB:
-		return fmt.Sprintf("%.2f GB", float64(bytes)/float64(GB))
-	case bytes >= MB:
-		return fmt.Sprintf("%.2f MB", float64(bytes)/float64(MB))
-	case bytes >= KB:
-		return fmt.Sprintf("%.2f KB", float64(bytes)/float64(KB))
-	default:
-		return fmt.Sprintf("%d B", bytes)
-	}
 }
 
 // mimeTypes 文件扩展名 → MIME 类型映射
@@ -986,19 +762,4 @@ func detectContentType(filename string) string {
 		}
 	}
 	return "application/octet-stream"
-}
-
-// formatDuration 格式化持续时间为可读格式
-func formatDuration(d time.Duration) string {
-	if d < time.Minute {
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	}
-	if d < time.Hour {
-		minutes := int(d.Minutes())
-		seconds := int(d.Seconds()) % 60
-		return fmt.Sprintf("%dm%ds", minutes, seconds)
-	}
-	hours := int(d.Hours())
-	minutes := int(d.Minutes()) % 60
-	return fmt.Sprintf("%dh%dm", hours, minutes)
 }
