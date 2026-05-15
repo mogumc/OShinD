@@ -82,6 +82,7 @@ func (e *Engine) Download(ctx context.Context, rawURL string, config *types.Down
 		}
 
 		outputPath := e.getOutputPath(task)
+		task.SetStatus(types.TaskStatusVerifying)
 		skip, checkedPath, checkErr := checkExistingFile(outputPath, task)
 		if checkErr != nil {
 			task.SetStatus(types.TaskStatusFailed)
@@ -189,6 +190,7 @@ func (e *Engine) SubmitDownload(rawURL string, config *types.DownloadConfig, onR
 			// 下载前检查已存在文件（NoResume 时跳过）
 			outputPath := e.getOutputPath(task)
 			if !task.Config.NoResume {
+				task.SetStatus(types.TaskStatusVerifying)
 				skip, checkedPath, checkErr := checkExistingFile(outputPath, task)
 				if checkErr != nil {
 					task.SetStatus(types.TaskStatusFailed)
