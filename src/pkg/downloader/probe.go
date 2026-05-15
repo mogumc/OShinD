@@ -68,19 +68,14 @@ func Probe(rawURL string, config *types.DownloadConfig) (*types.FileMetadata, er
 		metadata.AcceptRange = acceptRange
 	}
 
-	etag := resp.Header.Get("ETag")
-	if etag != "" {
-		metadata.ETag = strings.Trim(etag, "\"")
-	}
-
 	contentType := resp.Header.Get("Content-Type")
 	if contentType != "" {
 		metadata.ContentType = contentType
 	}
 
-	contentMD5 := resp.Header.Get("Content-MD5")
-	if contentMD5 != "" {
-		metadata.Checksum = contentMD5
+	if csType, csValue := DetectChecksumFromHeaders(resp.Header); csValue != "" {
+		metadata.ChecksumType = csType
+		metadata.Checksum = csValue
 	}
 
 	if cd := resp.Header.Get("Content-Disposition"); cd != "" {

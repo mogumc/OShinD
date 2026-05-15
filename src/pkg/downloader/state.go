@@ -63,9 +63,11 @@ func SaveOShinState(task *types.DownloadTask, filePath string) error {
 		pb.Urls = append(pb.Urls, task.Config.MultiSources...)
 	}
 
-	// 校验信息
+	// 校验信息：优先使用用户显式配置，否则保存 Probe 阶段自动检测的校验和
 	if task.Config.ChecksumType != "" && task.Config.ChecksumValue != "" {
 		pb.Et = task.Config.ChecksumType + ":" + task.Config.ChecksumValue
+	} else if task.Metadata != nil && task.Metadata.Checksum != "" && task.Metadata.ChecksumType != "" {
+		pb.Et = task.Metadata.ChecksumType + ":" + task.Metadata.Checksum
 	}
 
 	// 只保存已完成的 chunks（含 start+end 起止位置）
@@ -85,7 +87,7 @@ func SaveOShinState(task *types.DownloadTask, filePath string) error {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
-	// 直接覆写目标文件（状态文件无需原子性，最坏情况读到旧数据，下次保存恢复）
+	// 直接覆写目标文件
 	if err := os.WriteFile(filePath, data, 0644); err != nil {
 		return fmt.Errorf("failed to write state file: %w", err)
 	}
@@ -94,7 +96,6 @@ func SaveOShinState(task *types.DownloadTask, filePath string) error {
 }
 
 // LoadOShinState 从 .oshin 文件加载下载状态
-// 自动检测格式：Protobuf 二进制
 func LoadOShinState(filePath string) (*OShinState, error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
@@ -117,7 +118,7 @@ func LoadOShinState(filePath string) (*OShinState, error) {
 	return nil, fmt.Errorf("failed to read state file: %w", err)
 }
 
-// 将 Protobuf 消息转换为内部 V2 表示
+// 将 Protobuf 消息转换为内部结构表示
 func protoToState(pb *pbtypes.OShinState, filePath string) *OShinState {
 	state := &OShinState{
 		filePath:    filePath,
@@ -149,7 +150,7 @@ func protoToState(pb *pbtypes.OShinState, filePath string) *OShinState {
 	return state
 }
 
-// RemoveOShinState 删除 .oshin 文件（下载完成后）
+// RemoveOShinState 下载完成后删除 .oshin 文件
 func RemoveOShinState(filePath string) error {
 	if filePath == "" {
 		return nil
@@ -208,7 +209,7 @@ func (s *StateSaver) Start() {
 	}()
 }
 
-// Stop 停止定期保存（使用 sync.Once 确保只执行一次）
+// Stop 停止定期保存
 func (s *StateSaver) Stop() {
 	s.stopOnce.Do(func() {
 		close(s.stopChan)
@@ -222,7 +223,7 @@ func (s *StateSaver) MarkDirty() {
 	s.dirty = true
 }
 
-// Save 执行保存（如果标记了 dirty）
+// Save 执行保存
 func (s *StateSaver) Save() {
 	if s.dirty {
 		SaveOShinState(s.task, s.filePath)
@@ -230,7 +231,7 @@ func (s *StateSaver) Save() {
 	}
 }
 
-// ForceSave 强制保存（不论是否有变更）
+// ForceSave 强制保存
 func (s *StateSaver) ForceSave() {
 	s.dirty = true
 	s.Save()

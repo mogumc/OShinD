@@ -119,9 +119,9 @@ type FileMetadata struct {
 	Size          int64  // 文件大小（字节），-1 表示未知
 	SupportResume bool   // 是否支持断点续传
 	AcceptRange   string // 支持的 Range 单位（如 "bytes"）
-	ETag          string // 资源标识
 	ContentType   string // 内容类型
-	Checksum      string // 校验和（如有）
+	Checksum      string // 校验和值（如有）
+	ChecksumType  string // 校验和类型："md5" / "sha256" / ""（未知）
 	FileName      string // 服务器返回的文件名（Content-Disposition）
 }
 

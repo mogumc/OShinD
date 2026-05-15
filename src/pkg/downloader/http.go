@@ -27,16 +27,17 @@ func checkExistingFile(outputPath string, task *types.DownloadTask) (skip bool, 
 	// 文件存在，确定有效校验值
 	var checksumType, checksumValue string
 
-	// 优先级：用户指定 > probe 得到的 Checksum > ETag MD5
+	// 优先级：用户指定 > probe 得到的 Checksum（含类型）
 	if task.Config.ChecksumType != "" && task.Config.ChecksumValue != "" {
 		checksumType = task.Config.ChecksumType
 		checksumValue = task.Config.ChecksumValue
 	} else if task.Metadata.Checksum != "" {
-		checksumType = "md5"
+		if task.Metadata.ChecksumType != "" {
+			checksumType = task.Metadata.ChecksumType
+		} else {
+			checksumType = "md5"
+		}
 		checksumValue = task.Metadata.Checksum
-	} else if task.Metadata.ETag != "" && isMD5Hex(task.Metadata.ETag) {
-		checksumType = "md5"
-		checksumValue = task.Metadata.ETag
 	}
 
 	if checksumType != "" && checksumValue != "" {
@@ -91,9 +92,9 @@ func validateResumeFile(state *OShinState, tempPath string, task *types.Download
 		}
 	}
 
-	if task.Metadata.ETag != "" && isMD5Hex(task.Metadata.ETag) && state.ChunkSize > 0 {
+	if task.Metadata.Checksum != "" && task.Metadata.ChecksumType == "md5" && state.ChunkSize > 0 {
 		partialMD5, calcErr := CalculatePartialMD5(tempPath, state.ChunkSize)
-		if calcErr == nil && strings.EqualFold(partialMD5, task.Metadata.ETag) {
+		if calcErr == nil && strings.EqualFold(partialMD5, task.Metadata.Checksum) {
 			return true
 		}
 		// partial MD5 不匹配

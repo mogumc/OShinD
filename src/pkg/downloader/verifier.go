@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"regexp"
 	"strings"
 
 	"github.com/mogumc/oshind/types"
@@ -113,13 +112,56 @@ func CalculatePartialMD5(filePath string, size int64) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-// AutoDetectChecksum 自动探测服务器提供的校验和
+// isHex 检查字符串是否为纯十六进制字符
+func isHex(s string) bool {
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return len(s) > 0
+}
+
+// DetectChecksumFromHeaders 从 HTTP 响应头中提取校验和信息
+// 优先级：Content-MD5 > 含 md5/sha256 关键字的自定义头 > ETag 作为 MD5 回退
+func DetectChecksumFromHeaders(headers http.Header) (checksumType, checksumValue string) {
+	// 检查 Content-MD5 头
+	if v := headers.Get("Content-MD5"); v != "" {
+		return "md5", v
+	}
+
+	// 检查其他自定义校验头
+	for key, values := range headers {
+		if len(values) == 0 {
+			continue
+		}
+		lowerKey := strings.ToLower(key)
+		if strings.Contains(lowerKey, "md5") {
+			return "md5", values[0]
+		}
+		if strings.Contains(lowerKey, "sha256") || strings.Contains(lowerKey, "sha-256") {
+			return "sha256", values[0]
+		}
+	}
+
+	// 从 ETag 中提取 MD5
+	if etag := headers.Get("ETag"); etag != "" {
+		trimmed := strings.Trim(etag, `"`)
+		if len(trimmed) == 32 && isHex(trimmed) {
+			return "md5", strings.ToLower(trimmed)
+		}
+	}
+
+	return "", ""
+}
+
+// AutoDetectChecksum 自动探测服务器提供的校验和（发送 HEAD 请求）
+// 若调用方已有 HTTP 响应，应直接使用 DetectChecksumFromHeaders 避免重复请求
 func AutoDetectChecksum(rawURL string, config *types.DownloadConfig) (checksumType string, checksumValue string, err error) {
 	if config == nil {
 		config = types.DefaultConfig()
 	}
 
-	// 发送 HEAD 请求
 	client := &http.Client{
 		Timeout: config.Timeout,
 	}
@@ -129,11 +171,9 @@ func AutoDetectChecksum(rawURL string, config *types.DownloadConfig) (checksumTy
 		return "", "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// 设置自定义头
 	for key, value := range config.Headers {
 		req.Header.Set(key, value)
 	}
-
 	req.Header.Set("User-Agent", "OShinD/1.0")
 
 	resp, err := client.Do(req)
@@ -142,26 +182,8 @@ func AutoDetectChecksum(rawURL string, config *types.DownloadConfig) (checksumTy
 	}
 	defer resp.Body.Close()
 
-	// 检查 Content-MD5 头
-	contentMD5 := resp.Header.Get("Content-MD5")
-	if contentMD5 != "" {
-		return "md5", contentMD5, nil
-	}
-
-	// 检查其他自定义校验头
-	for key, values := range resp.Header {
-		lowerKey := strings.ToLower(key)
-		if len(values) > 0 {
-			if strings.Contains(lowerKey, "md5") {
-				return "md5", values[0], nil
-			}
-			if strings.Contains(lowerKey, "sha256") || strings.Contains(lowerKey, "sha-256") {
-				return "sha256", values[0], nil
-			}
-		}
-	}
-
-	return "", "", nil
+	csType, csValue := DetectChecksumFromHeaders(resp.Header)
+	return csType, csValue, nil
 }
 
 // CalculateHash 计算文件哈希并返回值（不比较）
@@ -183,8 +205,7 @@ func (v *Verifier) CalculateHash(filePath string, checksumType string) (string, 
 }
 
 // VerifyTask 校验下载任务的文件
-// 校验优先级：1. 显式配置 > 2. Probe 阶段已获取的 Content-MD5 > 3. ETag（若为 32 位十六进制则视为 MD5）
-// 优化：只读文件一次算哈希，避免 Verify() + CalculateChecksum() 重复读取
+// 校验优先级：1. 显式配置 > 2. Probe 阶段已获取的校验和（含类型）
 func VerifyTask(task *types.DownloadTask, filePath string) *types.VerifyResult {
 	verifier := NewVerifier()
 
@@ -196,14 +217,14 @@ func VerifyTask(task *types.DownloadTask, filePath string) *types.VerifyResult {
 		checksumType = task.Config.ChecksumType
 		checksumValue = task.Config.ChecksumValue
 	} else if task.Config.AutoChecksum {
-		// 优先级 2：Probe 阶段已获取的 Content-MD5（避免重复发 HEAD 请求）
+		// 优先级 2：Probe 阶段已获取的校验和（避免重复发 HEAD 请求）
 		if task.Metadata != nil && task.Metadata.Checksum != "" {
-			checksumType = "md5"
+			if task.Metadata.ChecksumType != "" {
+				checksumType = task.Metadata.ChecksumType
+			} else {
+				checksumType = "md5"
+			}
 			checksumValue = task.Metadata.Checksum
-		} else if task.Metadata != nil && isMD5Hex(task.Metadata.ETag) {
-			// 优先级 3：ETag 为 32 位十六进制视为 MD5
-			checksumType = "md5"
-			checksumValue = task.Metadata.ETag
 		}
 	}
 
@@ -217,7 +238,7 @@ func VerifyTask(task *types.DownloadTask, filePath string) *types.VerifyResult {
 		Expected: checksumValue,
 	}
 
-	// 只读文件一次计算哈希，手动比较（避免 Verify + CalculateChecksum 两次读取）
+	// 只读文件一次计算哈希
 	actual, err := verifier.CalculateHash(filePath, checksumType)
 	if err != nil {
 		result.Actual = ""
@@ -227,14 +248,4 @@ func VerifyTask(task *types.DownloadTask, filePath string) *types.VerifyResult {
 	result.Actual = actual
 	result.Passed = strings.EqualFold(actual, checksumValue)
 	return result
-}
-
-// isMD5Hex 判断字符串是否为 32 位十六进制（即 MD5 哈希值）
-// 部分 CDN 服务器（如 biligame.com）将 MD5 作为 ETag 返回
-var md5HexRegex = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
-
-func isMD5Hex(s string) bool {
-	// HTTP ETag 值可能带引号，去掉后再匹配
-	s = strings.Trim(s, "\"")
-	return md5HexRegex.MatchString(s)
 }
