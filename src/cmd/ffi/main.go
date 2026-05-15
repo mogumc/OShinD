@@ -245,7 +245,7 @@ func OShinD_Download(url *C.char, optionsJson *C.char) *C.char {
 	}
 
 	e := initEngine()
-	taskID, err := e.SubmitDownload(goURL, config, nil, nil)
+	taskID, err := e.SubmitDownload(goURL, config, nil)
 	if err != nil {
 		return C.CString("")
 	}
@@ -308,9 +308,6 @@ func OShinD_CancelTask(taskID *C.char) C.int {
 
 	e := initEngine()
 
-	// 先停止 reporter，避免 cancel 后仍有进度输出
-	e.StopReporter(goTaskID)
-
 	if err := e.CancelTask(goTaskID); err != nil {
 		return 0
 	}
@@ -352,7 +349,7 @@ func OShinD_ResumeTask(taskID *C.char) *C.char {
 	goTaskID := C.GoString(taskID)
 
 	e := initEngine()
-	newID, err := e.ResumeTask(goTaskID, nil, nil)
+	newID, err := e.ResumeTask(goTaskID, nil)
 	if err != nil {
 		result := map[string]string{"error": err.Error()}
 		data, _ := json.Marshal(result)
