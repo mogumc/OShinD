@@ -86,7 +86,7 @@ const (
 	TaskStatusVerifying                     // 校验中
 	TaskStatusCompleted                     // 已完成
 	TaskStatusFailed                        // 失败
-	TaskStatusPaused                        // 已暂停（用户主动暂停）
+	TaskStatusPaused                        // 已暂停
 )
 
 // String 返回任务状态的字符串表示

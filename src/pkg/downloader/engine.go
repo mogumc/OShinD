@@ -20,6 +20,8 @@ type Engine struct {
 	ftpDownloader  *FTPDownloader
 	sftpDownloader *SFTPDownloader
 	verifier       *Verifier
+	onReport       func(lines []string) // 外部进度输出回调
+	onStop         func(maxLines int)   // 外部进度停止回调（ANSI 清行）
 }
 
 // NewEngine 创建新的下载引擎
@@ -37,6 +39,14 @@ func NewEngine(config *types.DownloadConfig) *Engine {
 		sftpDownloader: NewSFTPDownloader(),
 		verifier:       NewVerifier(),
 	}
+}
+
+// SetOutputCallbacks 设置外部输出回调（用于 CLI 等需要 human-readable 输出的场景）
+// onReport: 接收进度行并输出
+// onStop: 接收最大行数，用于清除 ANSI 进度区
+func (e *Engine) SetOutputCallbacks(onReport func(lines []string), onStop func(maxLines int)) {
+	e.onReport = onReport
+	e.onStop = onStop
 }
 
 // Download 创建并执行下载任务
@@ -71,6 +81,8 @@ func (e *Engine) Download(ctx context.Context, rawURL string, config *types.Down
 	// 创建进度报告器（500ms 间隔，小文件也能及时显示）
 	// 注意：不在此处启动，由各协议 Download() 在所有预下载消息输出完毕后启动
 	reporter := NewProgressReporter(task, 500*time.Millisecond)
+	reporter.OnReport = e.onReport
+	reporter.OnStop = e.onStop
 	e.mu.Lock()
 	e.reporters[task.ID] = reporter
 	e.mu.Unlock()
@@ -143,11 +155,7 @@ func (e *Engine) Download(ctx context.Context, rawURL string, config *types.Down
 	}
 
 	// 下载完成，执行校验
-	// 停止进度报告，准备输出校验信息
 	e.cleanupReporter(task.ID)
-
-	// 输出校验提示信息
-	fmt.Printf("\n  [i] Verifying file integrity...\n")
 	task.SetStatus(types.TaskStatusVerifying)
 	outputPath := e.getOutputPath(task)
 	verifyResult := VerifyTask(task, outputPath)
@@ -165,7 +173,6 @@ func (e *Engine) Download(ctx context.Context, rawURL string, config *types.Down
 	// 下载完成
 	task.SetStatus(types.TaskStatusCompleted)
 	e.cleanupCancelFunc(task.ID)
-	fmt.Printf("\n  [+] Download completed!\n")
 
 	return task, nil
 }
@@ -199,6 +206,8 @@ func (e *Engine) SubmitDownload(rawURL string, config *types.DownloadConfig) (st
 
 	// 创建进度报告器
 	reporter := NewProgressReporter(task, 500*time.Millisecond)
+	reporter.OnReport = e.onReport
+	reporter.OnStop = e.onStop
 	e.reporters[task.ID] = reporter
 	e.mu.Unlock()
 
@@ -276,8 +285,6 @@ func (e *Engine) SubmitDownload(rawURL string, config *types.DownloadConfig) (st
 
 		// 下载完成，执行校验
 		e.cleanupReporter(task.ID)
-
-		fmt.Printf("\n  [i] Verifying file integrity...\n")
 		task.SetStatus(types.TaskStatusVerifying)
 		outputPath := e.getOutputPath(task)
 		verifyResult := VerifyTask(task, outputPath)

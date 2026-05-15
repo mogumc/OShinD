@@ -47,36 +47,26 @@ func checkExistingFile(outputPath string, task *types.DownloadTask) (skip bool, 
 			return false, "", fmt.Errorf("failed to calculate checksum: %w", calcErr)
 		}
 		if strings.EqualFold(actual, checksumValue) {
-			fmt.Printf("  [i] File already exists and checksum matches, skipping download\n")
-			fmt.Printf("      Path: %s (%s)\n", outputPath, formatBytes(fi.Size()))
 			return true, outputPath, nil
 		}
 		// 校验不一致，重命名
-		fmt.Printf("  [!] File exists but checksum mismatch (expected %s, got %s), renaming\n",
-			checksumValue, actual)
 		newPath := findAvailablePath(outputPath)
 		if err := os.Rename(outputPath, newPath); err != nil {
 			return false, "", fmt.Errorf("failed to rename existing file: %w", err)
 		}
-		fmt.Printf("      Renamed to: %s\n", newPath)
 		return false, newPath, nil
 	}
 
 	// 无校验值：比较文件大小
 	if task.Metadata.Size > 0 && fi.Size() == task.Metadata.Size {
-		fmt.Printf("  [i] File already exists and size matches, skipping download\n")
-		fmt.Printf("      Path: %s (%s)\n", outputPath, formatBytes(fi.Size()))
 		return true, outputPath, nil
 	}
 
 	// 大小不一致，重命名
-	fmt.Printf("  [!] File exists but size mismatch (expected %s, got %s), renaming\n",
-		formatBytes(task.Metadata.Size), formatBytes(fi.Size()))
 	newPath := findAvailablePath(outputPath)
 	if err := os.Rename(outputPath, newPath); err != nil {
 		return false, "", fmt.Errorf("failed to rename existing file: %w", err)
 	}
-	fmt.Printf("      Renamed to: %s\n", newPath)
 	return false, newPath, nil
 }
 
@@ -99,7 +89,6 @@ func validateResumeFile(state *OShinState, tempPath string, task *types.Download
 				return true
 			}
 			// checksum 不匹配
-			fmt.Printf("  [!] Resume checksum mismatch (expected %s, got %s)\n", checksumValue, actual)
 			return false
 		}
 	}
@@ -120,8 +109,6 @@ func validateResumeFile(state *OShinState, tempPath string, task *types.Download
 	}
 
 	// 所有校验都失败
-	fmt.Printf("  [!] Resume validation failed: temp file size %s, expected %s\n",
-		formatBytes(fi.Size()), formatBytes(state.TotalSize))
 	return false
 }
 
@@ -260,7 +247,6 @@ func (d *HTTPDownloader) Download(ctx context.Context, task *types.DownloadTask,
 			task.Metadata.Size = existingState.TotalSize
 		}
 		if !validateResumeFile(existingState, tempPath, task) {
-			fmt.Printf("  [!] Resume validation failed, starting fresh download\n")
 			RemoveOShinState(oshinPath)
 			os.Remove(tempPath)
 			existingState = nil
@@ -287,8 +273,6 @@ func (d *HTTPDownloader) Download(ctx context.Context, task *types.DownloadTask,
 
 			if cs, ok := completedSet[i]; ok {
 				chunkStatus = types.ChunkStatusCompleted
-				// 优先使用 state 中保存的 Start/End（Protobuf V3 格式）
-				// 回退到计算值（JSON V2 旧格式只保存了 End）
 				if cs.Start > 0 {
 					start = cs.Start
 				}
@@ -316,9 +300,6 @@ func (d *HTTPDownloader) Download(ctx context.Context, task *types.DownloadTask,
 			}
 		}
 		resumedFromState = true
-		completedCount := len(completedSet)
-		fmt.Printf("  [+] Resumed from .oshin state (%d/%d chunks completed, %s)\n",
-			completedCount, chunkCount, formatBytes(totalDownloaded))
 	} else {
 		if err := d.initChunks(task); err != nil {
 			return fmt.Errorf("failed to init chunks: %w", err)
@@ -347,7 +328,6 @@ func (d *HTTPDownloader) Download(ctx context.Context, task *types.DownloadTask,
 	if resumedFromState {
 		tempFile, err = os.OpenFile(tempPath, os.O_RDWR, 0644)
 		if err != nil {
-			fmt.Printf("  [!] Temp file missing, starting fresh download\n")
 			resumedFromState = false
 			tempFile, err = os.Create(tempPath)
 		}
@@ -427,7 +407,6 @@ func (d *HTTPDownloader) Download(ctx context.Context, task *types.DownloadTask,
 				if err := d.downloadChunk(downloadCtx, task, chunk, tempFile); err != nil {
 					if !workerFailed.Load() && isPermanentFailure(err) {
 						workerFailed.Store(true)
-						fmt.Printf("\n  [!] Server connection limit detected, falling back to queue mode\n")
 					}
 					task.Progress.IncFailedChunks()
 					stateSaver.MarkDirty()
@@ -455,7 +434,6 @@ func (d *HTTPDownloader) Download(ctx context.Context, task *types.DownloadTask,
 			reporter.Stop()
 		}
 		// 强制退出：关闭所有空闲连接，打断阻塞在 body.Read() 上的 worker
-		fmt.Printf("\n  [!] Force closing connections after timeout\n")
 		d.transport.CloseIdleConnections()
 		<-done
 	}
@@ -691,14 +669,17 @@ func (d *HTTPDownloader) getOutputPath(task *types.DownloadTask) string {
 }
 
 // ProgressReporter 进度报告器
+// 通过回调函数将进度数据传递给外部，不在 downloader 内部直接输出
 type ProgressReporter struct {
 	task            *types.DownloadTask
 	interval        time.Duration
 	stopChan        chan struct{}
 	lastOutputLines int       // 上次输出的行数（用于清除）
-	maxOutputLines  int       // 历史最大输出行数（用于可靠清除，防止活跃线程减少时残留旧内容）
+	maxOutputLines  int       // 历史最大输出行数（用于可靠清除）
 	started         bool      // 是否已输出过至少一次
 	stopOnce        sync.Once // 确保 Stop() 只执行一次
+	OnReport        func(lines []string) // 回调：输出进度行
+	OnStop          func(maxLines int)   // 回调：停止时清除进度区
 }
 
 // NewProgressReporter 创建新的进度报告器
@@ -733,8 +714,8 @@ func (r *ProgressReporter) Start() {
 func (r *ProgressReporter) Stop() {
 	r.stopOnce.Do(func() {
 		close(r.stopChan)
-		if r.maxOutputLines > 0 && r.started {
-			fmt.Printf("\033[%dA\033[J", r.maxOutputLines)
+		if r.maxOutputLines > 0 && r.started && r.OnStop != nil {
+			r.OnStop(r.maxOutputLines)
 		}
 	})
 }
@@ -764,38 +745,30 @@ func (r *ProgressReporter) report() {
 		eta = time.Duration(remaining * float64(time.Second))
 	}
 
-	// 清除上一帧输出（使用历史最大行数，确保活跃线程减少时也能完整清除旧内容）
-	if r.maxOutputLines > 0 && r.started {
-		fmt.Printf("\033[%dA\033[J", r.maxOutputLines)
-	}
-
-	lines := 0
+	var lines []string
 
 	// 第1行：进度条 + 百分比 + 速度 + ETA
 	progress := float64(downloaded) / float64(total) * 100
 	bar := r.buildProgressBar(40)
 	if speed > 0 {
-		fmt.Printf("  %s %5.1f%% | %s/s | ETA: %s\n", bar, progress, formatBytes(int64(speed)), formatDuration(eta))
+		lines = append(lines, fmt.Sprintf("  %s %5.1f%% | %s/s | ETA: %s", bar, progress, formatBytes(int64(speed)), formatDuration(eta)))
 	} else {
-		fmt.Printf("  %s %5.1f%% | connecting...\n", bar, progress)
+		lines = append(lines, fmt.Sprintf("  %s %5.1f%% | connecting...", bar, progress))
 	}
-	lines++
 
 	// 第2行：线程统计
 	activeThreads := r.task.Progress.GetActiveThreads()
 	remainingChunks := r.task.Progress.GetRemainingChunks()
 	failedChunks := r.task.Progress.GetFailedChunks()
-	fmt.Printf("  Threads: %d/%d  |  Remaining: %d chunks  |  Failed: %d\n",
-		activeThreads, r.task.Config.MaxConnections, remainingChunks, failedChunks)
-	lines++
+	lines = append(lines, fmt.Sprintf("  Threads: %d/%d  |  Remaining: %d chunks  |  Failed: %d",
+		activeThreads, r.task.Config.MaxConnections, remainingChunks, failedChunks))
 
 	// 第3行起：活跃线程详情（只显示 DOWNLOADING 状态的分片，无速度列）
 	// 通过线程安全方法获取活跃分片快照，避免与下载 goroutine 写操作竞争
 	activeChunks := r.task.GetActiveChunks()
 
 	if len(activeChunks) > 0 {
-		fmt.Printf("  ── Active Threads ──\n")
-		lines++
+		lines = append(lines, "  ── Active Threads ──")
 		for i, chunk := range activeChunks {
 			chunkSize := chunk.End - chunk.Start + 1
 			chunkProgress := 0.0
@@ -803,17 +776,26 @@ func (r *ProgressReporter) report() {
 				chunkProgress = float64(chunk.Downloaded) / float64(chunkSize) * 100
 			}
 			miniBar := buildMiniBar(chunkProgress, 20)
-			fmt.Printf("  [T%d] Chunk#%-3d %s %5.1f%%\n",
-				i, chunk.Index, miniBar, chunkProgress)
-			lines++
+			lines = append(lines, fmt.Sprintf("  [T%d] Chunk#%-3d %s %5.1f%%",
+				i, chunk.Index, miniBar, chunkProgress))
 		}
 	}
 
-	r.lastOutputLines = lines
-	if lines > r.maxOutputLines {
-		r.maxOutputLines = lines
+	r.lastOutputLines = len(lines)
+	if len(lines) > r.maxOutputLines {
+		r.maxOutputLines = len(lines)
 	}
 	r.started = true
+
+	// 通过回调输出（清旧行 + 新行）
+	if r.OnReport != nil {
+		if r.maxOutputLines > 0 && r.started {
+			if r.OnStop != nil {
+				r.OnStop(r.maxOutputLines)
+			}
+		}
+		r.OnReport(lines)
+	}
 }
 
 // buildProgressBar 构建基于字节百分比的主进度条

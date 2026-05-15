@@ -96,7 +96,6 @@ func (d *SFTPDownloader) Download(ctx context.Context, task *types.DownloadTask,
 		}
 		// SFTP 单流下载，只比较文件大小
 		if !d.validateSFTPResumeFile(existingState, tempPath) {
-			fmt.Printf("  [!] Resume validation failed, starting fresh download\n")
 			RemoveOShinState(oshinPath)
 			os.Remove(tempPath)
 			existingState = nil
@@ -116,8 +115,6 @@ func (d *SFTPDownloader) Download(ctx context.Context, task *types.DownloadTask,
 		if len(existingState.Headers) > 0 {
 			task.Config.Headers = existingState.Headers
 		}
-		fmt.Printf("  [+] Resumed from .oshin state (%s already downloaded)\n",
-			formatBytes(existingState.TotalSize))
 	}
 
 	// 在所有预下载消息输出完毕后再启动进度显示
@@ -131,7 +128,6 @@ func (d *SFTPDownloader) Download(ctx context.Context, task *types.DownloadTask,
 	if resumedFromState {
 		outputFile, err = os.OpenFile(tempPath, os.O_RDWR, 0644)
 		if err != nil {
-			fmt.Printf("  [!] Temp file missing, starting fresh download\n")
 			resumedFromState = false
 			outputFile, err = os.Create(tempPath)
 		} else {
@@ -163,7 +159,6 @@ func (d *SFTPDownloader) Download(ctx context.Context, task *types.DownloadTask,
 
 	// SFTP 使用单流下载，通过 Seek 支持断点续传
 	if resumeOffset > 0 {
-		fmt.Printf("  [+] SFTP resuming from offset %s\n", formatBytes(resumeOffset))
 		// Seek 到续传位置
 		if _, err := remoteFile.Seek(resumeOffset, io.SeekStart); err != nil {
 			return fmt.Errorf("SFTP seek failed: %w", err)
@@ -230,8 +225,7 @@ func (d *SFTPDownloader) validateSFTPResumeFile(state *OShinState, tempPath stri
 		return true
 	}
 
-	fmt.Printf("  [!] Resume validation failed: temp file size %s, expected %s\n",
-		formatBytes(fi.Size()), formatBytes(state.TotalSize))
+	// 所有校验都失败
 	return false
 }
 
